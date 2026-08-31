@@ -1,4 +1,4 @@
-import os
+import os, math
 import telebot
 from telebot import types
 from flask import Flask, request
@@ -10,68 +10,68 @@ SOL_ADDRESS = "DVvg75XKBCsXcuo1Wxe7A3BYcW3sXA5zcd76NLMHFxGy"
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
+# ============ TUMI EKHANE EDIT KORBE ============
+MY_BALANCE_USD = 8.22
+MY_BALANCE_SOL = "0.0000000000"
+MY_BALANCE_LTC = "0.1698255240"
+TOTAL_CARDS = 101
+TOTAL_BALANCE = "$1,392.79"
+
+MY_CARDS = [
+    "533985xx CAD$212.36 at 39%",
+    "403446xx USD$118.43 at 39% 🅿️",
+    "435880xx USD$100.00 at 39% 🅿️",
+    "435880xx USD$99.16 at 39% 🔄",
+    "435880xx USD$80.26 at 39%",
+    "461126xx CAD$78.58 at 39% 🅿️",
+    "533937xx CAD$75.00 at 39%",
+    "533985xx CAD$67.09 at 39%",
+    "525362xx USD$63.32 at 39%",
+    "403446xx USD$54.42 at 39% 🔄",
+]
+# ============ EDIT SES ============
+
+CARDS_PER_PAGE = 10
+
+def get_listing_text(page):
+    total_pages = math.ceil(len(MY_CARDS)/10)
+    start = page * 10
+    page_cards = MY_CARDS[start:start+10]
+    cards_text = ""
+    for i, card in enumerate(page_cards, start=start+1):
+        cards_text += f"{i}. {card}\n"
+    return f"""Your Balance:
+💵 USD: ${MY_BALANCE_USD}
+- SOL: {MY_BALANCE_SOL} ($0.00)
+- LTC: {MY_BALANCE_LTC} (${MY_BALANCE_USD})
+
+{cards_text}
+Total Cards: {TOTAL_CARDS} | Total Cards Balance: {TOTAL_BALANCE}
+
+Legend:
+🔄 = Re-listed
+G = Used on Google
+🅿️ = Used on PayPal
+
+Page {page+1}/{total_pages}"""
+
+def get_listing_markup(page):
+    total_pages = math.ceil(len(MY_CARDS)/10) if MY_CARDS else 1
+    markup = types.InlineKeyboardMarkup(row_width=4)
+    markup.add(
+        types.InlineKeyboardButton("⏪ First", callback_data=f"page_0"),
+        types.InlineKeyboardButton("⬅️ Back", callback_data=f"page_{max(0, page-1)}"),
+        types.InlineKeyboardButton("Next ➡️", callback_data=f"page_{min(total_pages-1, page+1)}"),
+        types.InlineKeyboardButton("⏩ Last", callback_data=f"page_{total_pages-1}")
+    )
+    markup.add(
+        types.InlineKeyboardButton("⏪ -5", callback_data=f"page_{max(0, page-5)}"),
+        types.InlineKeyboardButton("⏩ +5", callback_data=f"page_{min(total_pages-1, page+5)}")
+    )
+    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="main_menu"))
+    return markup
+
 @bot.message_handler(commands=['start'])
 def start(message):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(
-        types.KeyboardButton("💳 My Balance"), types.KeyboardButton("👤 My Profile"),
-        types.KeyboardButton("📋 Browse Cards"), types.KeyboardButton("🔍 Check Card"),
-        types.KeyboardButton("💰 Deposit"), types.KeyboardButton("💸 Withdraw"),
-        types.KeyboardButton("🎁 Refer & Earn"), types.KeyboardButton("🔑 Redeem Code"),
-        types.KeyboardButton("⚙️ Filters"), types.KeyboardButton("📞 Support"),
-        types.KeyboardButton("📜 Refund Rules"), types.KeyboardButton("💱 Exchange Rate")
-    )
-    bot.send_message(message.chat.id, f"Hi {message.from_user.first_name}! Welcome to Xprepaids Exchange ✅", reply_markup=markup)
-
-@bot.message_handler(func=lambda m: m.text and "Deposit" in m.text)
-def deposit_menu(message):
-    markup = types.InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        types.InlineKeyboardButton("SOL Deposit", callback_data="dep_sol"),
-        types.InlineKeyboardButton("LTC Deposit", callback_data="dep_ltc")
-    )
-    bot.send_message(message.chat.id, "💰 Choose your deposit method:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("dep_"))
-def deposit_callback(call):
-    if call.data == "dep_sol":
-        addr = SOL_ADDRESS
-        coin = "SOL (Solana) Deposit"
-        network = "Network: Solana (SPL)"
-    else:
-        addr = LTC_ADDRESS
-        coin = "LTC (Litecoin) Deposit"
-        network = "Network: Litecoin"
-    
-    text = f"""💰 {coin}
-
-{network}
-Address:
-`{addr}`
-
-💵 Minimum: $1 equivalent
-⏳ No Pending Transactions
-
-Send korar por TXID /check_deposit e din."""
-    
-    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={addr}"
-    bot.send_photo(call.message.chat.id, qr_url, caption=text, parse_mode="Markdown")
-
-@bot.message_handler(func=lambda m: True)
-def others(message):
-    if "/start" not in message.text:
-        bot.send_message(message.chat.id, "Use /start for main menu")
-
-@app.route(f"/{TOKEN}", methods=['POST'])
-def webhook():
-    bot.process_new_updates([telebot.types.Update.de_json(request.stream.read().decode("utf-8"))])
-    return "ok", 200
-
-@app.route("/")
-def home():
-    bot.remove_webhook()
-    bot.set_webhook(url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{TOKEN}")
-    return "Bot Live with QR", 200
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    user = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
+    text = f"⚡ Welcome {user} to X STOCK! ⚡\n
