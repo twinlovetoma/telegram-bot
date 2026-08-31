@@ -1,111 +1,85 @@
-import os
-from datetime import datetime
+import os, json, threading
+from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.error import BadRequest
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-PRODUCTS = []
-USERS_DB = {} # {user_id: {"purchases": [{"id, price, dt}], "deposits": [dt]}}
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+LTC_ADDRESS = os.environ.get("LTC_ADDRESS", "ltc1qYOUR_LTC_ADDRESS")
+SOL_ADDRESS = os.environ.get("SOL_ADDRESS", "YOUR_SOL_ADDRESS")
+STOCK_CHANNEL = os.environ.get("STOCK_CHANNEL", "https://t.me/YourStockChannel")
+SUPPORT_LINK = os.environ.get("SUPPORT_LINK", "https://t.me/YourSupport")
+CHECKER_BOT = os.environ.get("CHECKER_BOT", "https://t.me/YourCheckerBot")
 
-PER_PAGE = 5
+DATA_FILE = "users.json"
+def load_db():
+    if os.path.exists(DATA_FILE):
+        try: return json.load(open(DATA_FILE))
+        except: return {}
+    return {}
+def save_db(db): json.dump(db, open(DATA_FILE, 'w'), indent=2)
 
-def get_main(): return [p for p in PRODUCTS if 1 <= p['price'] <= 500]
-def get_cents(): return [p for p in PRODUCTS if 0.10 <= p['price'] <= 0.98]
+user_db = load_db()
 
-def build_keyboard(items, page, list_type):
-    start = page * PER_PAGE
-    slice_items = items[start:start+PER_PAGE]
-    kb = []
-    for p in slice_items:
-        kb.append([InlineKeyboardButton(f"{p['name']} | ${p['price']}", callback_data=f"buy_{p['id']}")])
-
-    nav = [
-        InlineKeyboardButton("First", callback_data=f"{list_type}_0"),
-        InlineKeyboardButton("-5", callback_data=f"{list_type}_{max(0,page-5)}"),
-        InlineKeyboardButton("Back", callback_data=f"{list_type}_{max(0,page-1)}"),
-        InlineKeyboardButton("Next", callback_data=f"{list_type}_{page+1}"),
-        InlineKeyboardButton("+5", callback_data=f"{list_type}_{page+5}"),
-        InlineKeyboardButton("Last", callback_data=f"{list_type}_last"),
-    ]
-    kb.append(nav)
-    kb.append([InlineKeyboardButton("Refresh 🔄", callback_data=f"refresh_{list_type}_{page}"), InlineKeyboardButton("Purchase 🛒", callback_data="mypurchase")])
-    if list_type == "main":
-        kb.append([InlineKeyboardButton("Cents $0.10-$0.98 (Neche)", callback_data="cents_0")])
-    return InlineKeyboardMarkup(kb)
-
-async def listings(update, context):
-    items = get_main()
-    await update.message.reply_text(f"Listings $1-$500 | Total: {len(items)}", reply_markup=build_keyboard(items, 0, "main"))
-
-async def cents_listing(update, context):
-    items = get_cents()
-    await update.message.reply_text(f"Cents $0.10-$0.98 | Total: {len(items)}", reply_markup=build_keyboard(items, 0, "cents"))
-
-async def profile(update, context):
-    user = update.effective_user
-    u = USERS_DB.get(user.id, {"sol":0, "ltc":0, "usd":0, "deposits":[], "purchases":[]})
-    last_deps = "\n".join(u['deposits'][-3:]) or "None"
-    last_pur = "\n".join([f"ID {p['id']} | ${p['price']} | {p['dt']}" for p in u['purchases'][-3:]]) or "None"
-    text = f"""⚡ X STOCK PROFILE ⚡
-Name: {user.full_name}
-Username: @{user.username}
-User ID: {user.id}
-SOL Balance: {u['sol']}
-LTC Balance: {u['ltc']}
-USD Total: ${u['usd']}
-
-Deposits
-- Last:
-{last_deps}
-
-Purchases
-- Count: {len(u['purchases'])}
-- Last (with DateTime):
-{last_pur}
-"""
-    await update.message.reply_text(text)
-
-async def button_handler(update, context):
-    q = update.callback_query
-    await q.answer()
-    user_id = q.from_user.id
-    if user_id not in USERS_DB: USERS_DB[user_id] = {"sol":0,"ltc":0,"usd":0,"deposits":[],"purchases":[]}
-
-    data = q.data
-    if data.startswith("buy_"):
-        pid = int(data.split("_")[1])
-        p = next((x for x in PRODUCTS if x['id']==pid), None)
-        if p:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            USERS_DB[user_id]["purchases"].append({"id":pid, "price":p['price'], "dt":now})
-            await q.message.reply_text(f"Purchased: {p['name']} | ${p['price']} | {now}")
-    elif "main" in data or "cents" in data:
-        list_type = "main" if "main" in data else "cents"
-        items = get_main() if list_type=="main" else get_cents()
-        page = 0 if "last" not in data else max(0, len(items)//PER_PAGE -1)
-        try: page = int(data.split("_")[-1]) if "last" not in data and "refresh" not in data else page
-        except: page=0
-        await q.edit_message_text(f"{list_type} | Page {page}", reply_markup=build_keyboard(items, page, list_type))
-
-app = Application.builder().token(BOT_TOKEN).build()
-app.add_handler(CommandHandler("listings", listings))
-app.add_handler(CommandHandler("cents_listing", cents_listing))
-app.add_handler(CommandHandler("profile", profile))
-app.add_handler(CommandHandler("add_product", lambda u,c: c.bot.send_message(u.effective_chat.id, "Use: /add_product Name | 12.5 | InStock")))
-app.add_handler(CallbackQueryHandler(button_handler))
-# Render port fix
-from flask import Flask
-import threading, os
-
+# Render Port Fix
 web = Flask(__name__)
 @web.route('/')
-def home(): 
-    return "Bot is Live"
+def home(): return "Bot Live"
+threading.Thread(target=lambda: web.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000))), daemon=True).start()
 
-def run_web():
-    web.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+async def safe_edit(query, text, markup=None):
+    try:
+        await query.edit_message_text(text=text, reply_markup=markup, parse_mode='HTML')
+    except BadRequest as e:
+        if "Message is not modified" not in str(e): print(e)
 
-threading.Thread(target=run_web, daemon=True).start()
+def main_menu(bot_username):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔍 X Checker Bot", url=CHECKER_BOT)],
+        [InlineKeyboardButton("📢 Stock Updates", url=STOCK_CHANNEL), InlineKeyboardButton("💬 Refund Support", url=SUPPORT_LINK)],
+        [InlineKeyboardButton("📈 Listing", callback_data='listings'), InlineKeyboardButton("🎉 Referral Program", callback_data='referral')],
+        [InlineKeyboardButton("👤 Profile", callback_data='profile'), InlineKeyboardButton("💰 Deposit", callback_data='deposit')],
+        [InlineKeyboardButton("❓ FAQ/News", callback_data='faq')]
+    ])
 
-print("Bot polling started...")
-app.run_polling()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    uid = str(user.id)
+    args = context.args
+
+    # Referral logic
+    if uid not in user_db:
+        user_db[uid] = {"balance": 0.0, "refs": [], "earned": 0.0, "active_refs": 0, "first_tx_done": False}
+        # Check if joined via ref link
+        if args and args[0].startswith("ref_"):
+            ref_id = args[0].replace("ref_", "")
+            if ref_id!= uid and ref_id in user_db:
+                if uid not in user_db[ref_id]["refs"]:
+                    user_db[ref_id]["refs"].append(uid)
+                    save_db(user_db)
+
+    save_db(user_db)
+    bot_me = await context.bot.get_me()
+    bot_username = bot_me.username
+
+    username_show = f"@{user.username}" if user.username else user.first_name
+    welcome_text = f"⚡ Welcome {username_show} to X STOCK! ⚡\n\nYour ID: <code>{uid}</code>\nBalance: ${user_db[uid]['balance']:.2f}\n\n👇 Choose an option:"
+
+    if update.message:
+        await update.message.reply_text(welcome_text, reply_markup=main_menu(bot_username), parse_mode='HTML')
+    else:
+        await safe_edit(update.callback_query, welcome_text, main_menu(bot_username))
+
+async def referral_program(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = str(query.from_user.id)
+    data = user_db.get(uid, {"refs": [], "earned": 0.0, "active_refs": 0})
+
+    bot_me = await context.bot.get_me()
+    bot_username = bot_me.username
+    # EKHANE TOMAR BOT ER LINK AUTO ASBE
+    ref_link = f"https://t.me/{bot_username}?start=ref_{uid}"
+
+    total_refs = len(data.get("refs", []))
+    # Qualified
