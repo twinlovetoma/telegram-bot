@@ -10,68 +10,59 @@ SOL_ADDRESS = "DVvg75XKBCsXcuo1Wxe7A3BYcW3sXA5zcd76NLMHFxGy"
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# ============ TUMI EKHANE EDIT KORBE ============
-MY_BALANCE_USD = 8.22
-MY_BALANCE_SOL = "0.0000000000"
-MY_BALANCE_LTC = "0.1698255240"
-TOTAL_CARDS = 101
-TOTAL_BALANCE = "$1,392.79"
-
+MY_BALANCE = 8.22
 MY_CARDS = [
-    "533985xx CAD$212.36 at 39%",
-    "403446xx USD$118.43 at 39% 🅿️",
-    "435880xx USD$100.00 at 39% 🅿️",
-    "435880xx USD$99.16 at 39% 🔄",
-    "435880xx USD$80.26 at 39%",
-    "461126xx CAD$78.58 at 39% 🅿️",
-    "533937xx CAD$75.00 at 39%",
-    "533985xx CAD$67.09 at 39%",
-    "525362xx USD$63.32 at 39%",
-    "403446xx USD$54.42 at 39% 🔄",
+    "533985xx CAD212.36 at 39%",
+    "403446xx USD118.43 at 39%",
+    "435880xx USD100.00 at 39%",
+    "435880xx USD99.16 at 39%",
 ]
-# ============ EDIT SES ============
 
-CARDS_PER_PAGE = 10
+def get_text(page):
+    total = math.ceil(len(MY_CARDS)/10)
+    s = page*10
+    txt = ""
+    for i, c in enumerate(MY_CARDS[s:s+10], start=s+1):
+        txt += f"{i}. {c}\n"
+    return f"Balance: ${MY_BALANCE}\n\n{txt}\nPage {page+1}/{total}"
 
-def get_listing_text(page):
-    total_pages = math.ceil(len(MY_CARDS)/10)
-    start = page * 10
-    page_cards = MY_CARDS[start:start+10]
-    cards_text = ""
-    for i, card in enumerate(page_cards, start=start+1):
-        cards_text += f"{i}. {card}\n"
-    return f"""Your Balance:
-💵 USD: ${MY_BALANCE_USD}
-- SOL: {MY_BALANCE_SOL} ($0.00)
-- LTC: {MY_BALANCE_LTC} (${MY_BALANCE_USD})
-
-{cards_text}
-Total Cards: {TOTAL_CARDS} | Total Cards Balance: {TOTAL_BALANCE}
-
-Legend:
-🔄 = Re-listed
-G = Used on Google
-🅿️ = Used on PayPal
-
-Page {page+1}/{total_pages}"""
-
-def get_listing_markup(page):
-    total_pages = math.ceil(len(MY_CARDS)/10) if MY_CARDS else 1
-    markup = types.InlineKeyboardMarkup(row_width=4)
-    markup.add(
-        types.InlineKeyboardButton("⏪ First", callback_data=f"page_0"),
-        types.InlineKeyboardButton("⬅️ Back", callback_data=f"page_{max(0, page-1)}"),
-        types.InlineKeyboardButton("Next ➡️", callback_data=f"page_{min(total_pages-1, page+1)}"),
-        types.InlineKeyboardButton("⏩ Last", callback_data=f"page_{total_pages-1}")
-    )
-    markup.add(
-        types.InlineKeyboardButton("⏪ -5", callback_data=f"page_{max(0, page-5)}"),
-        types.InlineKeyboardButton("⏩ +5", callback_data=f"page_{min(total_pages-1, page+5)}")
-    )
-    markup.add(types.InlineKeyboardButton("🔙 Back", callback_data="main_menu"))
-    return markup
+def get_markup(page):
+    total = math.ceil(len(MY_CARDS)/10)
+    m = types.InlineKeyboardMarkup(row_width=2)
+    m.add(types.InlineKeyboardButton("Back", callback_data=f"page_{max(0,page-1)}"), types.InlineKeyboardButton("Next", callback_data=f"page_{min(total-1,page+1)}"))
+    m.add(types.InlineKeyboardButton("Menu", callback_data="main_menu"))
+    return m
 
 @bot.message_handler(commands=['start'])
 def start(message):
-    user = f"@{message.from_user.username}" if message.from_user.username else message.from_user.first_name
-    text = f"⚡ Welcome {user} to X STOCK! ⚡\n
+    name = message.from_user.username or message.from_user.first_name
+    welcome = "Welcome @" + str(name) + " to X STOCK! Sell Buy deals in seconds."
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(types.InlineKeyboardButton("X Checker Bot", url="https://t.me/XprepaidCheckerBot"))
+    markup.add(types.InlineKeyboardButton("Support", url="https://t.me/twinlovetoma"))
+    markup.add(types.InlineKeyboardButton("Listing", callback_data="listing_0"))
+    bot.send_message(message.chat.id, welcome, reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: True)
+def cb(call):
+    if "listing_" in call.data or "page_" in call.data:
+        page = int(call.data.split("_")[1])
+        bot.edit_message_text(get_text(page), call.message.chat.id, call.message.message_id, reply_markup=get_markup(page))
+    elif call.data == "main_menu":
+        start(call.message)
+    else:
+        bot.answer_callback_query(call.id, "Coming soon!")
+
+@app.route("/" + TOKEN, methods=['POST'])
+def webhook():
+    bot.process_new_updates([telebot.types.Update.de_json(request.stream.read().decode("utf-8"))])
+    return "ok", 200
+
+@app.route("/")
+def home():
+    bot.remove_webhook()
+    bot.set_webhook(url="https://" + os.environ.get('RENDER_EXTERNAL_HOSTNAME') + "/" + TOKEN)
+    return "Bot Live", 200
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
