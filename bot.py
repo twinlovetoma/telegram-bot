@@ -93,4 +93,19 @@ app.add_handler(CommandHandler("cents_listing", cents_listing))
 app.add_handler(CommandHandler("profile", profile))
 app.add_handler(CommandHandler("add_product", lambda u,c: c.bot.send_message(u.effective_chat.id, "Use: /add_product Name | 12.5 | InStock")))
 app.add_handler(CallbackQueryHandler(button_handler))
+# Render port fix
+from flask import Flask
+import threading, os
+
+web = Flask(__name__)
+@web.route('/')
+def home(): 
+    return "Bot is Live"
+
+def run_web():
+    web.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+
+threading.Thread(target=run_web, daemon=True).start()
+
+print("Bot polling started...")
 app.run_polling()
