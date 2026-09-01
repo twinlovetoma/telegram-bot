@@ -1,239 +1,230 @@
-import os, json, threading, hashlib, re, requests, random
-from datetime import datetime
-from io import BytesIO
-import qrcode
-from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+import os, json, hashlib, re, time
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN = int(os.getenv("ADMIN_ID", "7634497248"))
-STOCK_CHANNEL = os.getenv("STOCK_CHANNEL_ID", "")
-SOL_ADDR = os.getenv("SOL_ADDRESS", "Not set")
-LTC_ADDR = os.getenv("LTC_ADDRESS", "Not set")
-
-SELLER_FEE = 20.0
-RELIST_FEE = 10.0
-RESALE_SHARE = 0.35
-ADMIN_CUT = 0.04
-
-app_flask = Flask(__name__)
-@app_flask.route('/')
-def home(): return "Gift Store OK"
-threading.Thread(target=lambda: app_flask.run(host='0.0.0.0', port=int(os.getenv("PORT", 10000))), daemon=True).start()
+ADMIN = int(os.getenv("ADMIN_ID", "0"))
+SELLER_FEE = 20
+RESELL_FEE = 5
 
 def load(f):
-    if not os.path.exists(f): return {}
     try:
-        with open(f,'r',encoding='utf-8') as x: return json.load(x)
+        if not os.path.exists(f): return {}
+        with open(f,"r") as fp: return json.load(fp)
     except: return {}
 def save(f,d):
-    with open(f,'w',encoding='utf-8') as x: json.dump(d,x,indent=2)
-
-def make_qr(text):
-    qr=qrcode.QRCode(box_size=10, border=2); qr.add_data(text); qr.make(fit=True)
-    img=qr.make_image(fill_color="black", back_color="white"); bio=BytesIO(); img.save(bio,'PNG'); bio.seek(0); return bio
-
-def get_prices():
-    try:
-        r=requests.get("https://api.coingecko.com/api/v3/simple/price?ids=solana,litecoin&vs_currencies=usd", timeout=5).json()
-        return float(r['solana']['usd']), float(r['litecoin']['usd'])
-    except: return 0.0,0.0
+    with open(f,"w") as fp: json.dump(d, fp, indent=2)
 
 def parse_gift(text):
     m=re.search(r'\$\s*(\d+(?:\.\d+)?)', text)
-    if not m: raise ValueError("Format: BRAND CODE $AMOUNT ex: STEAM ABCD123 $25")
+    if not m: raise ValueError("Format: Details $Price\nEx: CODM 420 CP $5")
     amount=float(m.group(1))
-    before=text.split('$')[0].strip()
-    parts=before.split()
-    if not parts: raise ValueError("Brand dao")
-    brand=parts[0].upper()
-    code=' '.join(parts[1:]) if len(parts)>1 else before
-    if len(code)<3: raise ValueError("Code too short")
-    h=hashlib.sha256(code.lower().strip().encode()).hexdigest()
-    return brand, code.strip(), amount, h
-
-def get_main_menu(uid_int):
-    kb=[
-        [InlineKeyboardButton("🔥 Latest Listings", callback_data="browse")],
-        [InlineKeyboardButton("💰 My Balance", callback_data="balance")],
-        [InlineKeyboardButton("💵 Deposit", callback_data="deposit")],
-        [InlineKeyboardButton("👤 My Profile", callback_data="profile")]
-    ]
-    if uid_int==ADMIN: kb.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin")])
-    return InlineKeyboardMarkup(kb)
-
-async def set_commands(app):
-    cmds=[BotCommand("start","Launch bot"),BotCommand("profile","View profile"),BotCommand("balance","View balance"),BotCommand("deposit","Deposit"),BotCommand("listings","Browse")]
-    await app.bot.set_my_commands(cmds)
-
-async def send_stock(context, p):
-    if not STOCK_CHANNEL: return
-    try:
-        await context.bot.send_message(chat_id=STOCK_CHANNEL, text=f"🔥 NEW LISTING\n🎁 {p['brand']} ${p['amount']} -> ${p['sell_price']}\nSeller: {p.get('seller_id')}\nTotal: {len(load('products.json'))}")
-    except: pass
+    details=text.split('$')[0].strip()
+    if len(details)<3: raise ValueError("Short details")
+    words=details.split()
+    brand=words[0].upper()
+    if len(words)>1 and words[0].lower() in ['call','free','pubg','mobile','cod','garena','codm']:
+        brand=" ".join(words[:2]).upper()
+    h=hashlib.sha256(details.lower().encode()).hexdigest()
+    return brand[:20], details, amount, h
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users=load("users.json"); uid=str(update.effective_user.id)
+    users=load("users.json")
+    uid=str(update.effective_user.id)
     if uid not in users:
-        users[uid]={"balance":0,"sol":0,"ltc":0,"username":update.effective_user.username,"first_name":update.effective_user.first_name,"joined":datetime.now().strftime("%Y-%m-%d %H:%M"),"purchases":0,"spent":0,"is_seller":False,"can_resell":False,"invited":0,"referred_by":"N/A"}
+        users[uid]={"balance":0,"is_seller":False,"can_resell":False,"sales":0,"joined":time.time()}
         save("users.json",users)
-    await update.message.reply_text(f"🎉 Welcome {update.effective_user.first_name}!\n\n👋 Gift Code Store", reply_markup=get_main_menu(update.effective_user.id))
+    kb=[
+        [InlineKeyboardButton("🔥 Latest Items", callback_data="browse")],
+        [InlineKeyboardButton("🎮 CODM"), InlineKeyboardButton("🔥 Free Fire"), InlineKeyboardButton("PUBG")],
+        [InlineKeyboardButton("👤 My Profile"), InlineKeyboardButton("🏪 Vendor Panel")],
+        [InlineKeyboardButton("💵 Deposit"), InlineKeyboardButton("📜 My Orders")]
+    ]
+    await update.message.reply_text(f"🎮 **Welcome to Game Top-Up Shop**\n\nHi {update.effective_user.first_name}!\n\nCODM / Free Fire / PUBG / All Gifts", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
 async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query; await q.answer()
-    users=load("users.json"); products=load("products.json"); history=load("history.json")
     uid=str(q.from_user.id); uid_int=q.from_user.id
-    sol_p, ltc_p = get_prices()
+    users=load("users.json"); products=load("products.json"); settings=load("settings.json")
+    if not isinstance(settings, dict): settings={"global_perc":65,"global_fixed":None}
+    if uid not in users: users[uid]={"balance":0,"is_seller":False,"can_resell":False,"sales":0}; save("users.json",users)
 
-    if q.data=="browse":
-        if not products: await q.edit_message_text("No listings", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]])); return
-        ub=users.get(uid,{"balance":0,"sol":0,"ltc":0}); total=ub.get("balance",0)+ub.get("sol",0)*sol_p+ub.get("ltc",0)*ltc_p
-        t=f"💵 Your USD Total: ${total:.2f} | SOL ${sol_p} | LTC ${ltc_p}\n\n🔥 Latest:\n"
-        kb=[]
-        for pid,p in list(products.items())[-30:][::-1]:
-            t+=f"{p['brand']} ${p['amount']} -> ${p['sell_price']}\n"
+    # BROWSE
+    if q.data=="browse" or q.data in ["CODM","FREE","PUBG"]:
+        filt=q.data
+        items=list(products.items())
+        if filt!="browse":
+            items=[(k,v) for k,v in items if filt in v['brand']]
+        if not items:
+            await q.edit_message_text("No items in this category", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back")]])); return
+        t=f"🔥 {filt} - {len(items)} items\n\n"; kb=[]
+        for pid,p in items[:15]:
+            t+=f"• {p['brand']} | ${p['amount']} → **${p['sell_price']}**\n"
             kb.append([InlineKeyboardButton(f"Buy {p['brand']} ${p['sell_price']}", callback_data=f"buy_{pid}")])
-        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="back")])
-        await q.edit_message_text(t, reply_markup=InlineKeyboardMarkup(kb))
+        kb.append([InlineKeyboardButton("⬅️ Main Menu", callback_data="back")])
+        await q.edit_message_text(t, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
     elif q.data.startswith("buy_"):
-        pid=q.data.split("_",1)[1]; p=products.get(pid)
-        if not p: await q.edit_message_text("Sold"); return
-        await q.edit_message_text(f"🎁 {p['brand']}\nAmount: ${p['amount']}\nPrice: ${p['sell_price']}\nSeller: {p.get('seller_id')}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"Confirm ${p['sell_price']}", callback_data=f"confirm_{pid}")],[InlineKeyboardButton("Back", callback_data="browse")]]))
+        pid=q.data.split("buy_")[1]
+        p=products.get(pid)
+        if not p: await q.edit_message_text("Sold out"); return
+        kb=[[InlineKeyboardButton(f"✅ Confirm Pay ${p['sell_price']}", callback_data=f"confirm_{pid}")],[InlineKeyboardButton("⬅️ Back", callback_data="browse")]]
+        await q.edit_message_text(f"📦 **{p['brand']}**\n\nDetails: `{p['code']}`\nMRP: ${p['amount']}\n**Sell: ${p['sell_price']}**\n\nBalance: ${users[uid]['balance']}", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
 
     elif q.data.startswith("confirm_"):
-        pid=q.data.split("_",1)[1]; p=products.get(pid)
+        pid=q.data.split("confirm_")[1]; p=products.get(pid)
         if not p: return
-        price=float(p['sell_price']); ub=users.get(uid,{}); bal=ub.get("balance",0)
-        if bal<price: await q.edit_message_text(f"Low bal Need ${price} have ${bal}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Deposit", callback_data="deposit")]])); return
-        users[uid]["balance"]=bal-price
-        if p.get("is_resale") and p.get("original_buyer") in users:
-            users[p["original_buyer"]]["balance"]=users[p["original_buyer"]].get("balance",0)+price*RESALE_SHARE
-            if str(ADMIN) in users: users[str(ADMIN)]["balance"]=users[str(ADMIN)].get("balance",0)+price*ADMIN_CUT
-        users[uid]["purchases"]=users[uid].get("purchases",0)+1; users[uid]["spent"]=users[uid].get("spent",0)+price; save("users.json",users)
-        if uid not in history: history[uid]=[]
-        history[uid].append({"brand":p['brand'],"amount":p['amount'],"price":price,"date":datetime.now().strftime("%Y-%m-%d %H:%M"),"code":p['code']}); save("history.json",history)
-        try: await context.bot.send_message(chat_id=ADMIN, text=f"✅ PURCHASE\nBuyer {uid} @{q.from_user.username}\n{p['brand']} ${p['amount']} -> ${price}\nCode: {p['code']}")
-        except: pass
+        if users[uid]["balance"] < float(p["sell_price"]):
+            await q.edit_message_text(f"❌ Low Balance ${users[uid]['balance']}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("💵 Deposit", callback_data="deposit")]])); return
+        users[uid]["balance"]-=float(p["sell_price"])
+        orders=load("orders.json"); orders[pid]={"buyer":uid,"product":p,"time":time.time()}; save("orders.json",orders)
+        seller_id=p.get("seller_id")
+        if seller_id and seller_id in users:
+            users[seller_id]["balance"]=users[seller_id].get("balance",0)+float(p["sell_price"])*0.9 # seller gets 90%
+            users[seller_id]["sales"]=users[seller_id].get("sales",0)+1
+        save("users.json",users)
         del products[pid]; save("products.json",products)
-        await q.edit_message_text(f"✅ Bought!\nCode: `{p['code']}`\nSave it now.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Resell", callback_data=f"resell_{p['brand']}_{p['code']}_{p['amount']}")],[InlineKeyboardButton("History", callback_data="history")],[InlineKeyboardButton("Back", callback_data="back")]]))
+        await q.edit_message_text(f"✅ **Delivered!**\n\n`{p['code']}`\n\nSave this. Check My Orders.", parse_mode="Markdown")
 
-    elif q.data=="back": await q.edit_message_text("Main Menu", reply_markup=get_main_menu(uid_int))
     elif q.data=="profile":
-        u=users.get(uid,{}); total=u.get("balance",0)+u.get("sol",0)*sol_p+u.get("ltc",0)*ltc_p
-        txt=f"👤 {q.from_user.first_name}\n🆔 {uid} @{q.from_user.username}\n\n💵 USD Total: ${total:.2f}\n💰 Bal: ${u.get('balance',0)} SOL:{u.get('sol',0)} LTC:{u.get('ltc',0)}\n\n🛒 Purchases: {u.get('purchases',0)} Spent: ${u.get('spent',0)}\n\n🛠 Access\n- Seller: {'✅' if u.get('is_seller') else '❌ $20'}\n- Re-Sell: {'✅' if u.get('can_resell') else '❌ $10'}\n\nLast: {datetime.now()}"
-        kb=[[InlineKeyboardButton("🏪 Vendor Dashboard", callback_data="vendor")],[InlineKeyboardButton("🔄 Transfer", callback_data="transfer"),InlineKeyboardButton("🎁 Redeem", callback_data="redeem")],[InlineKeyboardButton("💳 Deposit", callback_data="deposit"),InlineKeyboardButton("📜 History", callback_data="history")],[InlineKeyboardButton("⬅️ Back", callback_data="back")]]
-        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data=="balance":
-        u=users.get(uid,{}); total=u.get("balance",0)+u.get("sol",0)*sol_p+u.get("ltc",0)*ltc_p
-        await q.edit_message_text(f"💰 USD Total ${total:.2f}\nBal ${u.get('balance',0)}\nSOL {u.get('sol',0)} x ${sol_p}\nLTC {u.get('ltc',0)} x ${ltc_p}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Deposit", callback_data="deposit")],[InlineKeyboardButton("Back", callback_data="back")]]))
-    elif q.data=="deposit":
-        await q.edit_message_text("Select:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("SOL", callback_data="dep_sol")],[InlineKeyboardButton("LTC", callback_data="dep_ltc")],[InlineKeyboardButton(f"Buy Seller ${SELLER_FEE}", callback_data="buy_seller")],[InlineKeyboardButton(f"Buy Re-sell ${RELIST_FEE}", callback_data="buy_resell")],[InlineKeyboardButton("Back", callback_data="back")]]))
-    elif q.data=="buy_seller":
-        if users[uid].get("balance",0)>=SELLER_FEE: users[uid]["balance"]-=SELLER_FEE; users[uid]["is_seller"]=True; save("users.json",users); await q.edit_message_text("✅ Seller enabled")
-        else: await q.edit_message_text(f"Need ${SELLER_FEE}")
-    elif q.data=="buy_resell":
-        if users[uid].get("balance",0)>=RELIST_FEE: users[uid]["balance"]-=RELIST_FEE; users[uid]["can_resell"]=True; save("users.json",users); await q.edit_message_text("✅ Re-sell enabled")
-        else: await q.edit_message_text(f"Need ${RELIST_FEE}")
-    elif q.data in ["dep_sol","dep_ltc"]:
-        addr=SOL_ADDR if q.data=="dep_sol" else LTC_ADDR; bio=make_qr(addr)
-        try: await q.message.delete()
-        except: pass
-        await context.bot.send_photo(chat_id=q.from_user.id, photo=bio, caption=f"Deposit to:\n`{addr}`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Submit TXID", callback_data="sub_"+q.data.split("_")[1])]]))
-    elif q.data.startswith("sub_"): context.user_data['w']='tx_'+q.data.split("_")[1]; await context.bot.send_message(chat_id=q.from_user.id, text="Send TXID:")
-    elif q.data=="history":
-        txt="📜 History:\n\n"
-        for h in history.get(uid,[])[-20:][::-1]: txt+=f"{h['brand']} ${h['amount']} - ${h['price']} {h['date']}\nCode: {h['code']}\n\n"
-        if not history.get(uid): txt+="No history"
-        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="profile")]]))
+        u=users[uid]
+        t=f"👤 **Profile**\nID: `{uid}`\n💰 Balance: ${u['balance']}\n🏪 Seller: {u['is_seller']}\n♻️ Resell: {u['can_resell']}\n📦 Sales: {u.get('sales',0)}"
+        kb=[[InlineKeyboardButton("🏪 Vendor"),InlineKeyboardButton("💵 Deposit")],[InlineKeyboardButton("📜 My Orders"),InlineKeyboardButton("🔥 Shop")]]
+        if uid_int==ADMIN: kb.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin")])
+        await q.edit_message_text(t, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+
     elif q.data=="vendor":
-        if not users[uid].get("is_seller"): await q.edit_message_text("Seller need $20", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Buy", callback_data="buy_seller")]])); return
-        my={k:v for k,v in products.items() if v.get('seller_id')==uid}; t=f"🏪 Vendor {len(my)} items\n\n"; kb=[]
-        for pid,p in my.items(): t+=f"{p['brand']} ${p['amount']} -> ${p['sell_price']}\n"; kb.append([InlineKeyboardButton(f"Remove {p['brand']}", callback_data=f"del_{pid}")])
-        kb.append([InlineKeyboardButton("➕ Add Gift", callback_data="a_add")]); kb.append([InlineKeyboardButton("Back", callback_data="profile")])
+        u=users[uid]
+        if not u.get("is_seller"):
+            await q.edit_message_text(f"🏪 **Vendor Locked**\n\nFee ${SELLER_FEE} to unlock add item\nYour: ${u['balance']}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"Buy Vendor ${SELLER_FEE}", callback_data="buy_seller")],[InlineKeyboardButton("Back", callback_data="profile")]])); return
+        my={k:v for k,v in products.items() if v.get('seller_id')==uid}
+        t=f"🏪 **Dashboard**\nItems: {len(my)}\nPerc: {settings.get('global_perc',65)}%\n\n"
+        kb=[]
+        for pid,p in my.items():
+            kb.append([InlineKeyboardButton(f"{p['brand']} ${p['sell_price']}", callback_data="noop"), InlineKeyboardButton("➖", callback_data=f"p_down_{pid}"), InlineKeyboardButton("➕", callback_data=f"p_up_{pid}"), InlineKeyboardButton("❌", callback_data=f"del_{pid}")])
+        kb.append([InlineKeyboardButton("➕ Add New Item", callback_data="a_add")])
+        if not u.get("can_resell"): kb.append([InlineKeyboardButton(f"♻️ Buy Resell ${RESELL_FEE}", callback_data="buy_resell")])
+        kb.append([InlineKeyboardButton("⬅️ Back", callback_data="profile")])
         await q.edit_message_text(t, reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data.startswith("del_"):
-        pid=q.data.split("_",1)[1]
-        if pid in products and (products[pid].get('seller_id')==uid or uid_int==ADMIN): del products[pid]; save("products.json",products)
-        await q.edit_message_text("Deleted", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="vendor")]]))
-    elif q.data.startswith("resell_"):
-        if not users[uid].get("can_resell"): await q.edit_message_text("Need Re-sell $10", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Buy", callback_data="buy_resell")]])); return
-        _, brand, code, amount = q.data.split("_",3); context.user_data['resell']=(brand,code,float(amount)); context.user_data['w']='resell_price'; await q.edit_message_text(f"Resell {brand} ${amount}\nEnter price:")
-    elif q.data=="transfer": context.user_data['w']='transfer'; await q.edit_message_text("Format: @username amount\nEx: @toma 5")
-    elif q.data=="redeem": context.user_data['w']='redeem'; await q.edit_message_text("Send redeem code:")
+
+    elif q.data=="buy_seller":
+        if users[uid]["balance"]<SELLER_FEE: await q.edit_message_text("Low balance"); return
+        users[uid]["balance"]-=SELLER_FEE; users[uid]["is_seller"]=True; save("users.json",users)
+        await q.edit_message_text("✅ Vendor Enabled", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Dashboard", callback_data="vendor")]]))
+    elif q.data=="buy_resell":
+        if users[uid]["balance"]<RESELL_FEE: await q.edit_message_text("Low balance"); return
+        users[uid]["balance"]-=RESELL_FEE; users[uid]["can_resell"]=True; save("users.json",users)
+        await q.edit_message_text("✅ Resell Enabled")
+
+    elif q.data=="deposit":
+        await q.edit_message_text(f"💵 **Deposit**\n\nID: `{uid}`\nMin $5\n\nAdmin ke Bkash/Nagad e taka diye ID dao\nAuto add hoye jabe", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="profile")]]))
+
     elif q.data=="admin":
         if uid_int!=ADMIN: return
-        await q.edit_message_text(f"👑 Admin\nUsers: {len(users)} Listings: {len(products)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➕ Add", callback_data="a_add")],[InlineKeyboardButton("📋 List/Del", callback_data="a_list")],[InlineKeyboardButton("👥 Users", callback_data="a_users")],[InlineKeyboardButton("💸 Add Bal", callback_data="a_bal")],[InlineKeyboardButton("Back", callback_data="back")]]))
-    elif q.data=="a_add": context.user_data['w']='add_gift'; await q.edit_message_text("Send: BRAND CODE $AMOUNT\nEx: STEAM XYZ123 $25", parse_mode="Markdown")
+        perc=settings.get("global_perc",65); fixed=settings.get("global_fixed")
+        kb=[
+            [InlineKeyboardButton("📋 All Stock List", callback_data="a_list")],
+            [InlineKeyboardButton(f"💲 Set % ({perc}%)", callback_data="set_all_price"), InlineKeyboardButton(f"💲 Fixed ${fixed if fixed else 'OFF'}", callback_data="set_fixed")],
+            [InlineKeyboardButton("💵 Add Bal"), InlineKeyboardButton("💸 Release Bal")],
+            [InlineKeyboardButton("📢 Broadcast"), InlineKeyboardButton("👥 Users")],
+            [InlineKeyboardButton("🗑️ Delete All Stock", callback_data="del_all")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="profile")]
+        ]
+        await q.edit_message_text(f"👑 **Admin**\nGlobal %: {perc}%\nFixed: {fixed}\nItems: {len(products)}\nUsers: {len(users)}", reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+
+    elif q.data.startswith("p_"):
+        if not users[uid].get("is_seller") and uid_int!=ADMIN: return
+        _, act, pid = q.data.split("_",2)
+        if pid not in products: return
+        if act=="down": products[pid]["sell_price"]=round(max(0.1,float(products[pid]["sell_price"])-0.5),2)
+        if act=="up": products[pid]["sell_price"]=round(float(products[pid]["sell_price"])+0.5,2)
+        save("products.json",products); await q.answer(f"Now ${products[pid]['sell_price']}")
+
     elif q.data=="a_list":
-        t=""; kb=[]
-        for pid,p in products.items(): t+=f"{p['brand']} ${p['amount']} -> ${p['sell_price']} s:{p.get('seller_id')}\n"; kb.append([InlineKeyboardButton(f"Del {p['brand']}", callback_data=f"del_{pid}")])
-        kb.append([InlineKeyboardButton("Back", callback_data="admin")]); await q.edit_message_text(t or "Empty", reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data=="a_users":
-        t="";
-        for k,v in list(users.items())[:25]: t+=f"{k} @{v.get('username')} ${v.get('balance')} pur:{v.get('purchases',0)}\n"
-        await q.edit_message_text(t, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="admin")]]))
-    elif q.data=="a_bal": context.user_data['w']='bal'; await q.edit_message_text("UserID Amount\nEx: 12345 10")
+        if uid_int!=ADMIN: return
+        t="📋 All Stock\n"; kb=[]
+        for pid,p in products.items():
+            t+=f"{pid[:5]} {p['brand']} ${p['amount']}->{p['sell_price']} by {p.get('seller_id','?')}\n"
+            kb.append([InlineKeyboardButton(f"Del {p['brand']}", callback_data=f"del_{pid}")])
+        kb.append([InlineKeyboardButton("Back", callback_data="admin")])
+        await q.edit_message_text(t[:4000], reply_markup=InlineKeyboardMarkup(kb))
+
+    elif q.data=="set_all_price":
+        if uid_int!=ADMIN: return
+        context.user_data['w']='set_all_price'
+        await q.edit_message_text("💲 % dao\nEx: 50 = $10 -> $5\nEx: 70 = $10 -> $7\nEx: 39 = $10 -> $3.9")
+    elif q.data=="set_fixed":
+        if uid_int!=ADMIN: return
+        context.user_data['w']='set_fixed'
+        await q.edit_message_text("💲 Fixed price dao sob item er jonno\nEx: 2 = sob $2\nOFF korte 0 likho")
+
+    elif q.data.startswith("del_"):
+        pid=q.data.split("del_")[1]
+        if pid in products: del products[pid]; save("products.json",products)
+        await q.answer("Deleted"); await q.edit_message_text("Deleted", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="admin")]]))
+
+    elif q.data=="del_all":
+        if uid_int!=ADMIN: return
+        save("products.json",{}); await q.edit_message_text("All deleted")
+    elif q.data=="back":
+        kb=[[InlineKeyboardButton("🔥 Latest", callback_data="browse")],[InlineKeyboardButton("👤 Profile"),InlineKeyboardButton("🏪 Vendor")]]
+        await q.edit_message_text("Main Menu", reply_markup=InlineKeyboardMarkup(kb))
+    elif q.data=="a_add":
+        context.user_data['w']='add_gift'
+        await q.edit_message_text("📩 Details $Price\nEx: `CODM 420 CP $5`\n`Free Fire 100 DIA UID 123 $3`", parse_mode="Markdown")
 
 async def mh(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    w=context.user_data.get('w'); txt=update.message.text.strip()
-    users=load("users.json"); products=load("products.json")
-    if w and w.startswith('tx_'):
-        await context.bot.send_message(chat_id=ADMIN, text=f"💰 NEW DEPOSIT {w}\nFrom {update.effective_user.id} @{update.effective_user.username}\nTX: {txt}")
-        await update.message.reply_text("✅ TX submitted"); context.user_data['w']=None; return
-    if w=='transfer':
+    txt=update.message.text.strip(); w=context.user_data.get('w')
+    users=load("users.json"); products=load("products.json"); settings=load("settings.json")
+    if not isinstance(settings, dict): settings={"global_perc":65,"global_fixed":None}
+    uid=str(update.effective_user.id)
+
+    if w=='set_all_price':
         try:
-            a=txt.split(); uname=a[0].replace('@',''); amt=float(a[1]); target=None
-            for k,v in users.items():
-                if v.get('username','').lower()==uname.lower(): target=k; break
-            if not target: await update.message.reply_text("User not found"); return
-            uid=str(update.effective_user.id)
-            if users[uid].get('balance',0)<amt: await update.message.reply_text("Low balance"); return
-            users[uid]['balance']-=amt; users[target]['balance']=users[target].get('balance',0)+amt; save("users.json",users); await update.message.reply_text(f"✅ Sent ${amt} to @{uname}")
-        except: await update.message.reply_text("Format: @username amount")
+            perc=float(txt.replace('%','').strip())
+            settings["global_perc"]=perc; settings["global_fixed"]=None
+            for pid in products: products[pid]["sell_price"]=round(float(products[pid]["amount"])*perc/100,2)
+            save("products.json",products); save("settings.json",settings)
+            await update.message.reply_text(f"✅ All {len(products)} items now {perc}%\n$10->{round(10*perc/100,2)}")
+        except: await update.message.reply_text("Valid % dao")
         context.user_data['w']=None; return
+
+    if w=='set_fixed':
+        try:
+            fp=float(txt.replace('$','').strip())
+            if fp==0: settings["global_fixed"]=None; await update.message.reply_text("Fixed OFF, % mode on")
+            else:
+                settings["global_fixed"]=fp
+                for pid in products: products[pid]["sell_price"]=fp
+                await update.message.reply_text(f"✅ All fixed ${fp}")
+            save("products.json",products); save("settings.json",settings)
+        except: await update.message.reply_text("Number dao")
+        context.user_data['w']=None; return
+
     if w=='add_gift':
         try:
-            brand,code,amount,h=parse_gift(txt)
-            if any(p.get('hash')==h for p in products.values()): await update.message.reply_text("❌ Same code already listed"); context.user_data['w']=None; return
-            pid=f"{brand}_{h[:8]}_{random.randint(100,999)}"
-            products[pid]={"brand":brand,"code":code,"amount":amount,"sell_price":round(amount*0.8,2),"hash":h,"seller_id":str(update.effective_user.id)}
-            save("products.json",products); await send_stock(context, products[pid]); await update.message.reply_text(f"✅ Added {brand} ${amount} -> ${products[pid]['sell_price']}")
-        except Exception as e: await update.message.reply_text(f"Error: {e}")
+            brand, code, amount, h = parse_gift(txt)
+            for p in products.values():
+                if p.get("hash")==h: await update.message.reply_text("Duplicate"); context.user_data['w']=None; return
+            fixed=settings.get("global_fixed"); perc=float(settings.get("global_perc",65))
+            final_price=round(float(fixed),2) if fixed else round(amount*perc/100,2)
+            pid=hashlib.md5(f"{uid}{code}{time.time()}".encode()).hexdigest()[:10]
+            products[pid]={"brand":brand,"code":code,"amount":amount,"sell_price":final_price,"seller_id":uid,"hash":h}
+            save("products.json",products)
+            await update.message.reply_text(f"✅ Added {brand} ${amount}->{final_price} ({perc if not fixed else f'Fixed ${fixed}'})")
+        except Exception as e: await update.message.reply_text(f"❌ {e}")
         context.user_data['w']=None; return
-    if w=='resell_price':
-        try:
-            price=float(txt); brand,code,amount=context.user_data['resell']; h=hashlib.sha256(code.lower().strip().encode()).hexdigest()
-            if any(p.get('hash')==h for p in products.values()): await update.message.reply_text("Already listed"); context.user_data['w']=None; return
-            pid=f"R_{h[:8]}_{random.randint(100,999)}"
-            products[pid]={"brand":brand,"code":code,"amount":amount,"sell_price":price,"hash":h,"seller_id":str(update.effective_user.id),"is_resale":True,"original_buyer":str(update.effective_user.id)}
-            save("products.json",products); await update.message.reply_text(f"✅ Relisted for ${price}, you get 35% next sale")
-        except: await update.message.reply_text("Enter valid number")
-        context.user_data['w']=None; return
+
     if w=='bal':
         try:
-            uid2,amt=txt.split(); amt=float(amt)
-            if uid2 not in users: users[uid2]={"balance":0,"username":"","purchases":0,"spent":0,"is_seller":False,"can_resell":False}
-            users[uid2]["balance"]=users[uid2].get("balance",0)+amt; save("users.json",users); await update.message.reply_text(f"Added ${amt} to {uid2}")
-        except: await update.message.reply_text("Format: UserID Amount")
+            tid, amt = txt.split(); users[tid]["balance"]+=float(amt); save("users.json",users); await update.message.reply_text("Added")
+        except: await update.message.reply_text("Format: ID AMT")
         context.user_data['w']=None; return
-    # seller direct add without / command
-    if users.get(str(update.effective_user.id),{}).get('is_seller') and '$' in txt:
-        try:
-            brand,code,amount,h=parse_gift(txt)
-            if any(p.get('hash')==h for p in products.values()): await update.message.reply_text("❌ Already listed"); return
-            pid=f"{brand}_{h[:8]}_{random.randint(100,999)}"
-            products[pid]={"brand":brand,"code":code,"amount":amount,"sell_price":round(amount*0.8,2),"hash":h,"seller_id":str(update.effective_user.id)}
-            save("products.json",products); await update.message.reply_text(f"✅ Listed {brand} ${amount}")
-        except: pass
 
 def main():
     app=Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(cb))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mh))
-    app.post_init=set_commands
     app.run_polling()
-
 if __name__=="__main__": main()
