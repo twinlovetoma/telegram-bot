@@ -1,20 +1,19 @@
-import os, json, threading
+import os, json, threading, qrcode
+from io import BytesIO
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN = int(os.getenv("ADMIN_ID", "7634497248"))
-USERNAME = os.getenv("BOT_USERNAME", "xprepaids_exchange_bot")
+STOCK_CHANNEL = os.getenv("STOCK_CHANNEL_ID", "")
+SOL_ADDR = os.getenv("SOL_ADDRESS", "Not set")
+LTC_ADDR = os.getenv("LTC_ADDRESS", "Not set")
 
 app_flask = Flask(__name__)
 @app_flask.route('/')
 def home(): return "OK"
-
-def run_flask():
-    app_flask.run(host='0.0.0.0', port=int(os.getenv("PORT", 10000)))
-
-threading.Thread(target=run_flask, daemon=True).start()
+threading.Thread(target=lambda: app_flask.run(host='0.0.0.0', port=int(os.getenv("PORT", 10000))), daemon=True).start()
 
 def load(f):
     if not os.path.exists(f): return {}
@@ -24,18 +23,36 @@ def load(f):
 def save(f,d):
     with open(f,'w', encoding='utf-8') as x: json.dump(d,x,indent=2)
 
+def make_qr(text):
+    qr = qrcode.QRCode(box_size=10, border=2)
+    qr.add_data(text)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    bio = BytesIO()
+    img.save(bio, 'PNG')
+    bio.seek(0)
+    return bio
+
+async def send_to_stock_channel(context, product_id, product):
+    if not STOCK_CHANNEL: return
+    try:
+        bal = product.get('card_balance',0)
+        price = product.get('sell_price',0)
+        status = product.get('status','')
+        preview = product.get('details','')[:6] + "****"
+        total = len(load("products.json"))
+        text = f"🔥 NEW STOCK ADDED 🔥\n\nSerial: {product_id}\nBalance: ${bal}\nPrice: ${price}\nStatus: {status}\nPreview: {preview}\n\nTotal: {total}"
+        await context.bot.send_message(chat_id=STOCK_CHANNEL, text=text)
+    except: pass
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users=load("users.json")
     uid=str(update.effective_user.id)
     if uid not in users:
         users[uid]={"balance":0}
         save("users.json",users)
-    kb=[
-        [InlineKeyboardButton("Browse", callback_data="browse")],
-        [InlineKeyboardButton("Balance", callback_data="balance")],
-        [InlineKeyboardButton("Admin", callback_data="admin")]
-    ]
-    await update.message.reply_text("Bot Running. Price Stock different per item supported.", reply_markup=InlineKeyboardMarkup(kb))
+    kb=[[InlineKeyboardButton("Browse Gifts", callback_data="browse")],[InlineKeyboardButton("Balance | Deposit", callback_data="balance")],[InlineKeyboardButton("Admin Panel", callback_data="admin")]]
+    await update.message.reply_text("Main Menu", reply_markup=InlineKeyboardMarkup(kb))
 
 async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
@@ -49,120 +66,142 @@ async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not products:
             await q.edit_message_text("No items", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]))
             return
-        t=""
-        kb=[]
+        t=""; kb=[]
         for pid,p in products.items():
-            t+=f"ID {pid} {p['name']} Price {p['price']} Stock {p['stock']} Status {p['status']}\n"
-            kb.append([InlineKeyboardButton(f"Buy {p['name']} {p['price']} Stock {p['stock']}", callback_data=f"buy_{pid}")])
+            bal=p.get('card_balance',0); price=p.get('sell_price',0); status=p.get('status','')
+            preview=p.get('details','')[:6] + "****"
+            t+=f"{pid} | Balance ${bal} | Price ${price} | Status {status} | {preview}\n"
+            kb.append([InlineKeyboardButton(f"Buy {pid} - ${price}", callback_data=f"buy_{pid}")])
         kb.append([InlineKeyboardButton("Back", callback_data="back")])
         await q.edit_message_text(t, reply_markup=InlineKeyboardMarkup(kb))
 
+    elif q.data.startswith("buy_"):
+        pid=q.data.split("_")[1]; p=products.get(pid)
+        if not p: return
+        bal=p.get('card_balance',0); price=p.get('sell_price',0); preview=p.get('details','')[:6]
+        txt=f"Serial: {pid}\nBalance: ${bal}\nPrice: ${price}\nStatus: {p.get('status')}\nPreview: {preview}****"
+        kb=[[InlineKeyboardButton(f"Confirm Buy ${price}", callback_data=f"confirm_{pid}")],[InlineKeyboardButton("Back", callback_data="browse")]]
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb))
+
+    elif q.data.startswith("confirm_"):
+        pid=q.data.split("_")[1]; p=products.get(pid)
+        if not p:
+            await q.edit_message_text("Sold out"); return
+        price=float(p.get('sell_price',0)); bal=users.get(uid,{}).get("balance",0)
+        if bal < price:
+            await q.edit_message_text(f"Low balance. Need ${price} you have ${bal}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Deposit", callback_data="deposit")],[InlineKeyboardButton("Back", callback_data="back")]]))
+            return
+        users[uid]["balance"]=bal-price; save("users.json",users)
+        del products[pid]; save("products.json",products)
+        if STOCK_CHANNEL:
+            try: await context.bot.send_message(chat_id=STOCK_CHANNEL, text=f"✅ SOLD: {pid} Remaining: {len(products)}")
+            except: pass
+        await q.edit_message_text(f"SUCCESS! Serial {pid}\nDetails:\n{p.get('details')}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]))
+
     elif q.data=="back":
-        kb=[[InlineKeyboardButton("Browse", callback_data="browse")],[InlineKeyboardButton("Balance", callback_data="balance")],[InlineKeyboardButton("Admin", callback_data="admin")]]
+        kb=[[InlineKeyboardButton("Browse Gifts", callback_data="browse")],[InlineKeyboardButton("Balance | Deposit", callback_data="balance")],[InlineKeyboardButton("Admin Panel", callback_data="admin")]]
         await q.edit_message_text("Main Menu", reply_markup=InlineKeyboardMarkup(kb))
+
     elif q.data=="balance":
         b=users.get(uid,{}).get("balance",0)
-        await q.edit_message_text(f"Balance {b}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]))
+        kb=[[InlineKeyboardButton("Deposit SOL / LTC", callback_data="deposit")],[InlineKeyboardButton("Back", callback_data="back")]]
+        await q.edit_message_text(f"Your Balance: ${b}", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif q.data=="deposit":
+        kb=[[InlineKeyboardButton("SOL Deposit", callback_data="dep_sol")],[InlineKeyboardButton("LTC Deposit", callback_data="dep_ltc")],[InlineKeyboardButton("Back", callback_data="balance")]]
+        await q.edit_message_text("Select Method:", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif q.data=="dep_sol":
+        bio = make_qr(SOL_ADDR)
+        caption = f"⚡ X PREPAIDS STOCK — SOL DEPOSIT ⚡\n\nDeposit Address:\n`{SOL_ADDR}`\n\nMinimum Deposit: 0.05 SOL\n\nSend SOL to this address. Your balance will update automatically after confirmation.\n\n⚠️ WARNING:\n- Deposits below the minimum amount will not be processed.\n- This address is valid only for your account. Do not share it.\n\n⚠️ Note: This deposit session is only active for 30 minutes. Please send your deposit before it expires."
+        kb=[[InlineKeyboardButton("I Sent - Submit TXID", callback_data="sub_sol")],[InlineKeyboardButton("Back", callback_data="deposit")]]
+        try: await q.message.delete()
+        except: pass
+        await context.bot.send_photo(chat_id=q.from_user.id, photo=bio, caption=caption, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif q.data=="dep_ltc":
+        bio = make_qr(LTC_ADDR)
+        caption = f"⚡ X PREPAIDS STOCK — LTC DEPOSIT ⚡\n\nDeposit Address:\n`{LTC_ADDR}`\n\nMinimum Deposit: 0.05 LTC\n\nSend LTC to this address. Your balance will update automatically after confirmation.\n\n⚠️ WARNING:\n- Deposits below the minimum amount will not be processed.\n- This address is valid only for your account. Do not share it.\n\n⚠️ Note: This deposit session is only active for 30 minutes. Please send your deposit before it expires."
+        kb=[[InlineKeyboardButton("I Sent - Submit TXID", callback_data="sub_ltc")],[InlineKeyboardButton("Back", callback_data="deposit")]]
+        try: await q.message.delete()
+        except: pass
+        await context.bot.send_photo(chat_id=q.from_user.id, photo=bio, caption=caption, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif q.data=="sub_sol":
+        context.user_data['w']='tx_sol'
+        await context.bot.send_message(chat_id=q.from_user.id, text="Send your SOL TXID + Amount Ex:\nabc123 10")
+    elif q.data=="sub_ltc":
+        context.user_data['w']='tx_ltc'
+        await context.bot.send_message(chat_id=q.from_user.id, text="Send your LTC TXID + Amount Ex:\nabc123 10")
+
     elif q.data=="admin":
-        kb=[[InlineKeyboardButton("Add", callback_data="a_add")],[InlineKeyboardButton("List Edit", callback_data="a_list")],[InlineKeyboardButton("Add Balance", callback_data="a_bal")],[InlineKeyboardButton("Back", callback_data="back")]]
+        kb=[[InlineKeyboardButton("Add New", callback_data="a_add")],[InlineKeyboardButton("List / Delete", callback_data="a_list")],[InlineKeyboardButton("Add Balance", callback_data="a_bal")],[InlineKeyboardButton("Back", callback_data="back")]]
         await q.edit_message_text("Admin", reply_markup=InlineKeyboardMarkup(kb))
     elif q.data=="a_add":
-        context.user_data['w']='n'
-        await q.edit_message_text("Name?")
+        context.user_data['w']='serial'; await q.edit_message_text("1. Serial / ID? Ex: 435880")
     elif q.data=="a_list":
         if not products:
-            await q.edit_message_text("No products", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="admin")]]))
-            return
-        kb=[]
-        t=""
+            await q.edit_message_text("No products", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="admin")]])); return
+        t=""; kb=[]
         for pid,p in products.items():
-            t+=f"ID {pid} {p['name']} Price {p['price']} Stock {p['stock']}\n"
-            kb.append([InlineKeyboardButton(f"Edit {pid}", callback_data=f"ed_{pid}"), InlineKeyboardButton(f"Del {pid}", callback_data=f"dl_{pid}")])
+            preview=p.get('details','')[:6]; t+=f"{pid} | ${p.get('card_balance')} | ${p.get('sell_price')} | {preview}****\n"
+            kb.append([InlineKeyboardButton(f"Del {pid}", callback_data=f"dl_{pid}")])
         kb.append([InlineKeyboardButton("Back", callback_data="admin")])
         await q.edit_message_text(t, reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data.startswith("ed_"):
-        pid=q.data.split("_")[1]
-        kb=[[InlineKeyboardButton("Price", callback_data=f"ep_{pid}")],[InlineKeyboardButton("Stock", callback_data=f"es_{pid}")],[InlineKeyboardButton("Back", callback_data="a_list")]]
-        await q.edit_message_text(f"ID {pid} edit what?", reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data.startswith("ep_"):
-        pid=q.data.split("_")[1]
-        context.user_data['w']=f"ep_{pid}"
-        await q.edit_message_text("New Price?")
-    elif q.data.startswith("es_"):
-        pid=q.data.split("_")[1]
-        context.user_data['w']=f"es_{pid}"
-        await q.edit_message_text("New Stock?")
     elif q.data.startswith("dl_"):
         pid=q.data.split("_")[1]
-        if pid in products:
-            del products[pid]
-            save("products.json",products)
+        if pid in products: del products[pid]; save("products.json",products)
         await q.edit_message_text(f"Deleted {pid}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="admin")]]))
     elif q.data=="a_bal":
-        context.user_data['w']='bal'
-        await q.edit_message_text("UserID Amount")
+        context.user_data['w']='bal'; await q.edit_message_text("UserID Amount Ex: 123456 10")
 
 async def mh(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id!=ADMIN: return
     w=context.user_data.get('w')
     txt=update.message.text.strip()
     prods=load("products.json")
-    if w=='n':
-        context.user_data['np']={"name":txt}
-        context.user_data['w']='p'
-        await update.message.reply_text("Price?")
-    elif w=='p':
-        context.user_data['np']['price']=float(txt)
-        context.user_data['w']='s'
-        await update.message.reply_text("Stock?")
-    elif w=='s':
-        context.user_data['np']['stock']=int(txt)
-        context.user_data['w']='st'
-        await update.message.reply_text("Status? Ex: Unregistered")
+    if w=='tx_sol' or w=='tx_ltc':
+        coin="SOL" if w=='tx_sol' else "LTC"
+        try:
+            await context.bot.send_message(chat_id=ADMIN, text=f"💰 NEW DEPOSIT {coin}\nFrom: {update.effective_user.id} @{update.effective_user.username}\nTX: {txt}")
+            await update.message.reply_text(f"✅ {coin} TX submitted! Admin will confirm.")
+        except: await update.message.reply_text("Submitted!")
+        context.user_data['w']=None
+        return
+    if update.effective_user.id!=ADMIN: return
+    if w=='serial':
+        context.user_data['np']={"pid":txt}; context.user_data['w']='cb'
+        await update.message.reply_text(f"Serial {txt} ok.\n2. Balance? Ex: 9.75")
+    elif w=='cb':
+        context.user_data['np']['card_balance']=float(txt); context.user_data['w']='sp'
+        await update.message.reply_text("3. Price? Ex: 10")
+    elif w=='sp':
+        context.user_data['np']['sell_price']=float(txt); context.user_data['w']='st'
+        await update.message.reply_text("4. Status? Ex: unregistered / registered")
     elif w=='st':
-        context.user_data['np']['status']=txt
-        context.user_data['w']='wa'
-        await update.message.reply_text("Warranty? Ex: 10 minutes")
+        context.user_data['np']['status']=txt; context.user_data['w']='wa'
+        await update.message.reply_text("5. Warranty? Ex: 10 minutes")
     elif w=='wa':
-        context.user_data['np']['warranty']=txt
-        context.user_data['w']='de'
-        await update.message.reply_text("Details?")
+        context.user_data['np']['warranty']=txt; context.user_data['w']='de'
+        await update.message.reply_text("6. Full Details dao? (full mail)")
     elif w=='de':
-        np=context.user_data['np']
-        pid=str(len(prods)+1)
-        prods[pid]={"name":np['name'],"price":np['price'],"stock":np['stock'],"status":np['status'],"warranty":np['warranty'],"details":txt}
+        np=context.user_data['np']; pid=np['pid']
+        prods[pid]={"name":pid,"card_balance":np['card_balance'],"sell_price":np['sell_price'],"status":np['status'],"warranty":np['warranty'],"details":txt}
         save("products.json",prods)
-        await update.message.reply_text(f"Added ID {pid} Price {np['price']} Stock {np['stock']}")
-        context.user_data['w']=None
-    elif w and w.startswith("ep_"):
-        pid=w.split("_")[1]
-        if pid in prods:
-            prods[pid]['price']=float(txt)
-            save("products.json",prods)
-            await update.message.reply_text(f"Price Updated {pid} to {txt}")
-        context.user_data['w']=None
-    elif w and w.startswith("es_"):
-        pid=w.split("_")[1]
-        if pid in prods:
-            prods[pid]['stock']=int(txt)
-            save("products.json",prods)
-            await update.message.reply_text(f"Stock Updated {pid} to {txt}")
+        await update.message.reply_text(f"Added {pid} Balance ${np['card_balance']} Price ${np['sell_price']}")
+        await send_to_stock_channel(context, pid, prods[pid])
         context.user_data['w']=None
     elif w=='bal':
         try:
-            uid,amt=txt.split()
-            users=load("users.json")
-            if uid not in users: users[uid]={"balance":0}
-            users[uid]["balance"]+=float(amt)
-            save("users.json",users)
-            await update.message.reply_text(f"Added {amt} to {uid}")
+            uid2,amt=txt.split(); users=load("users.json")
+            if uid2 not in users: users[uid2]={"balance":0}
+            users[uid2]["balance"]+=float(amt); save("users.json",users)
+            await update.message.reply_text(f"Added ${amt} to {uid2}")
+            try: await context.bot.send_message(chat_id=int(uid2), text=f"✅ Deposit confirmed! ${amt} added. Balance: ${users[uid2]['balance']}")
+            except: pass
             context.user_data['w']=None
         except: await update.message.reply_text("UserID Amount")
 
 def main():
-    if not TOKEN:
-        print("BOT_TOKEN missing")
-        return
     application=Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(cb))
