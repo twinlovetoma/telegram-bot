@@ -9,7 +9,7 @@ BOT_USERNAME = os.getenv("BOT_USERNAME", "xprepaids_exchange_bot")
 
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "Bot Live"
+def home(): return "Gift Mail Bot Live"
 threading.Thread(target=lambda: flask_app.run(host='0.0.0.0', port=int(os.getenv("PORT", 10000))), daemon=True).start()
 
 USERS_FILE="users.json"
@@ -26,24 +26,17 @@ def save_json(f,d):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users=load_json(USERS_FILE)
     uid=str(update.effective_user.id)
-    name=update.effective_user.first_name
-    args=context.args
     if uid not in users:
-        users[uid]={"balance":0,"referrals":0,"referred_by":None}
-        if args and args[0]!=uid:
-            ref=args[0]
-            if ref in users:
-                users[ref]["balance"]+=1
-                users[ref]["referrals"]+=1
+        users[uid]={"balance":0,"referrals":0}
         save_json(USERS_FILE,users)
     kb=[
         [InlineKeyboardButton("💰 Deposit", callback_data="deposit"), InlineKeyboardButton("👤 Profile", callback_data="profile")],
-        [InlineKeyboardButton("🛒 Browse", callback_data="browse"), InlineKeyboardButton("🎁 Referral", callback_data="referral")],
+        [InlineKeyboardButton("🛒 Browse Gifts", callback_data="browse"), InlineKeyboardButton("🎁 Referral", callback_data="referral")],
         [InlineKeyboardButton("💳 My Balance", callback_data="balance")]
     ]
     if update.effective_user.id==ADMIN_ID:
         kb.append([InlineKeyboardButton("⚙️ Admin Panel", callback_data="admin")])
-    await update.message.reply_text(f"⚡ Welcome {name} to X STOCK! ⚡\nID: {uid}", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(f"⚡ Welcome {update.effective_user.first_name}!\n\nProduct Type: giftscardsmail\nReady to sell ✅", reply_markup=InlineKeyboardMarkup(kb))
 
 async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q=update.callback_query
@@ -52,76 +45,58 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid=str(q.from_user.id)
     users=load_json(USERS_FILE)
     products=load_json(PRODUCTS_FILE)
-    user=users.get(uid,{"balance":0,"referrals":0})
 
     if q.data=="back":
         kb=[
             [InlineKeyboardButton("💰 Deposit", callback_data="deposit"), InlineKeyboardButton("👤 Profile", callback_data="profile")],
-            [InlineKeyboardButton("🛒 Browse", callback_data="browse"), InlineKeyboardButton("🎁 Referral", callback_data="referral")],
+            [InlineKeyboardButton("🛒 Browse Gifts", callback_data="browse"), InlineKeyboardButton("🎁 Referral", callback_data="referral")],
             [InlineKeyboardButton("💳 My Balance", callback_data="balance")]
         ]
         if q.from_user.id==ADMIN_ID: kb.append([InlineKeyboardButton("⚙️ Admin Panel", callback_data="admin")])
-        await q.edit_message_text(f"⚡ Welcome to X STOCK! ⚡\nID: {uid}", reply_markup=InlineKeyboardMarkup(kb))
-    elif q.data=="deposit":
-        await q.edit_message_text("Deposit korte admin ke inbox koro.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]))
-    elif q.data=="profile":
-        await q.edit_message_text(f"👤 ID: {uid}\nBalance: ${user['balance']}\nReferrals: {user.get('referrals',0)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]))
-    elif q.data=="balance":
-        await q.edit_message_text(f"💳 Balance: ${user['balance']}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]))
-    elif q.data=="referral":
-        link=f"https://t.me/{BOT_USERNAME}?start={uid}"
-        await q.edit_message_text(f"🎁 Link:\n{link}\nPer Refer $1", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]))
+        await q.edit_message_text("⚡ Main Menu ⚡", reply_markup=InlineKeyboardMarkup(kb))
+
     elif q.data=="browse":
         if not products:
-            await q.edit_message_text("No products yet. Admin panel theke add koro.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]))
+            await q.edit_message_text("No products yet. Admin theke add koro.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]))
             return
-        txt="🛒 Products:\n"; kb=[]
+        txt="🛒 **Available Stock**\n\n"
+        kb=[]
         for pid,p in products.items():
-            txt+=f"{pid}. {p['name']} - ${p['price']}\n"
-            kb.append([InlineKeyboardButton(f"Buy {p['name']}", callback_data=f"buy_{pid}")])
+            txt+=f"**ID {pid}**\nProduct: {p['name']}\nPrice: ${p['price']} | Stock: {p['stock']}\nStatus: {p['status']} | Warranty: {p['warranty']}\n---\n"
+            kb.append([InlineKeyboardButton(f"Buy {p['name']} - ${p['price']} (Stock {p['stock']})", callback_data=f"buy_{pid}")])
         kb.append([InlineKeyboardButton("Back", callback_data="back")])
-        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb))
+        await q.edit_message_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode="Markdown")
+
+    elif q.data.startswith("buy_"):
+        pid=q.data.split("_")[1]
+        p=products.get(pid)
+        await q.edit_message_text(f"Product: {p['name']}\nPrice: ${p['price']} | Stock: {p['stock']}\nStatus: {p['status']}\nWarranty: {p['warranty']}\nDetails: [Full details only after purchase]", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm Buy", callback_data=f"confirm_{pid}")],[InlineKeyboardButton("Back", callback_data="back")]]))
+
+    elif q.data.startswith("confirm_"):
+        pid=q.data.split("_")[1]
+        p=products.get(pid)
+        user=users.get(uid,{"balance":0})
+        if user["balance"] < float(p["price"]):
+            await q.edit_message_text(f"❌ Balance kom. Dorkar ${p['price']}, ache ${user['balance']}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]))
+            return
+        users[uid]["balance"]-=float(p["price"])
+        products[pid]["stock"]=int(products[pid]["stock"])-1
+        if products[pid]["stock"]<=0: del products[pid]
+        save_json(USERS_FILE,users)
+        save_json(PRODUCTS_FILE,products)
+        await q.edit_message_text(f"✅ Purchased!\n\nProduct: {p['name']}\nPrice: ${p['price']}\nDetails: {p['details']}\nWarranty: {p['warranty']} support time", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]))
+
     elif q.data=="admin":
-        if q.from_user.id!=ADMIN_ID: return
-        kb=[[InlineKeyboardButton("➕ Add Product", callback_data="admin_add")],[InlineKeyboardButton("💵 Add Balance", callback_data="admin_addbal")],[InlineKeyboardButton("Back", callback_data="back")]]
-        await q.edit_message_text("⚙️ Admin Panel", reply_markup=InlineKeyboardMarkup(kb))
+        kb=[[InlineKeyboardButton("➕ Add New Mail", callback_data="admin_add")],[InlineKeyboardButton("📋 List / Edit / Delete", callback_data="admin_list")],[InlineKeyboardButton("💵 Add Balance", callback_data="admin_addbal")],[InlineKeyboardButton("Back", callback_data="back")]]
+        await q.edit_message_text("⚙️ Admin Panel - Sob kichu ekhan theke change korte parba", reply_markup=InlineKeyboardMarkup(kb))
+
     elif q.data=="admin_add":
-        context.user_data['awaiting']='add_product'
-        await q.edit_message_text("Format: Name | Price | Code\nEx: Netflix | 5 | code123")
-    elif q.data=="admin_addbal":
-        context.user_data['awaiting']='add_balance'
-        await q.edit_message_text("Format: UserID Amount\nEx: 7634497248 10")
+        context.user_data['awaiting']='add_name'
+        await q.edit_message_text("1️⃣ Product Name? Ex: giftscardsmail")
 
-async def msg_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id!=ADMIN_ID: return
-    awaiting=context.user_data.get('awaiting')
-    if awaiting=='add_product':
-        try:
-            name,price,desc=[x.strip() for x in update.message.text.split("|")]
-            products=load_json(PRODUCTS_FILE)
-            pid=str(len(products)+1)
-            products[pid]={"name":name,"price":float(price),"desc":desc}
-            save_json(PRODUCTS_FILE,products)
-            await update.message.reply_text(f"Added {name}")
-            context.user_data['awaiting']=None
-        except: await update.message.reply_text("Wrong format")
-    elif awaiting=='add_balance':
-        try:
-            uid,amt=update.message.text.split()
-            users=load_json(USERS_FILE)
-            if uid not in users: users[uid]={"balance":0,"referrals":0}
-            users[uid]["balance"]+=float(amt)
-            save_json(USERS_FILE,users)
-            await update.message.reply_text(f"Added ${amt} to {uid}")
-            context.user_data['awaiting']=None
-        except: await update.message.reply_text("Wrong format")
-
-def main():
-    app=Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(buttons))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg_handle))
-    app.run_polling()
-
-if __name__=="__main__":
-    main()
+    elif q.data=="admin_list":
+        if not products:
+            await q.edit_message_text("No products", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="admin")]]))
+            return
+        kb=[]
+        txt="📋 Sob Item
