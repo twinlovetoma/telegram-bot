@@ -1,4 +1,4 @@
-import os, json, uuid, threading, re
+import os, json, uuid, threading, re, asyncio
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
@@ -6,14 +6,13 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7634497248"))
 STOCK_CHANNEL_ID = os.getenv("STOCK_CHANNEL_ID", "")
-LTC_ADDRESS = os.getenv("LTC_ADDRESS", "ltc1qxy")
-SOL_ADDRESS = os.getenv("SOL_ADDRESS", "So1aTest")
-
-print(f"CHECK: TOKEN={bool(BOT_TOKEN)} ADMIN={ADMIN_ID} CHANNEL={bool(STOCK_CHANNEL_ID)}")
+LTC_ADDRESS = os.getenv("LTC_ADDRESS", "ltc1q_test")
+SOL_ADDRESS = os.getenv("SOL_ADDRESS", "So1a_test")
+print(f"START: TOKEN={bool(BOT_TOKEN)} ADMIN={ADMIN_ID} CHANNEL={bool(STOCK_CHANNEL_ID)}")
 
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "v22 ULTIMATE - Buyer UI + Agent + Auto Update LIVE"
+def home(): return "v25 ULTIMATE ALL FEATURE FIXED"
 @flask_app.route('/health')
 def health(): return "OK"
 
@@ -27,16 +26,14 @@ def save_file(f,d):
     with open(f,'w') as x: json.dump(d, x, indent=2)
 def get_cfg():
     c=load_file("config.json", {"perc":39,"perc_enabled":True,"auto_post":True})
-    if "perc" not in c: c["perc"]=39
     return c
 def get_user(uid):
     users=load_file("users.json"); s=str(uid)
     if s not in users:
-        users[s]={"balance":0,"purchases":[],"ref_by":None}
-        save_file("users.json", users)
+        users[s]={"balance":0,"purchases":[],"ref_by":None}; save_file("users.json", users)
     return users
-
 def premium(t): return f"╔═══════════════╗\n ✨ {t} ✨\n╚═══════════════╝\n"
+
 def main_kb(is_admin=False):
     kb=[
         [KeyboardButton("💳 My Balance"), KeyboardButton("👤 My Profile"), KeyboardButton("📋 Browse Cards")],
@@ -65,47 +62,46 @@ def gp_kb(ctx):
         [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
     ])
 
+async def set_cmds(app):
+    cmds=[BotCommand("start","🚀 Start"),BotCommand("profile","👤 Profile"),BotCommand("balance","💳 Balance"),BotCommand("listings","📋 Browse"),BotCommand("deposit","💰 Deposit"),BotCommand("filter","⚙️ Filter"),BotCommand("support","🆘 Support")]
+    try: await app.bot.set_my_commands(cmds)
+    except: pass
+
 async def auto_post_channel(context, prods):
     if not STOCK_CHANNEL_ID: return
     if not get_cfg().get('auto_post',True): return
     try:
-        msg=premium("NEW STOCK AUTO")+"\n"
+        msg=premium("NEW STOCK AUTO AGENT")+"\n"
         for p in prods:
             f4=p['code'][:4]; avl=p.get('avl_small')
             msg+=f"💎 `{f4}...` {avl} ${p['sell_price']} G {'✅' if p.get('g') else '📴'} P {'✅' if p.get('p') else '📴'} REG {'✅' if p.get('reg') else '❌'}\n"
         cid=int(STOCK_CHANNEL_ID) if STOCK_CHANNEL_ID.lstrip('-').isdigit() else STOCK_CHANNEL_ID
         await context.bot.send_message(chat_id=cid, text=msg, parse_mode='Markdown')
-        print("Auto posted to channel")
-    except Exception as e: print(f"Channel post fail: {e}")
+    except Exception as e: print(f"Channel fail {e}")
 
-async def set_cmds(app):
-    cmds=[BotCommand("start","🚀 Start"),BotCommand("profile","👤 Profile"),BotCommand("balance","💳 Balance"),BotCommand("listings","📋 Browse"),BotCommand("deposit","💰 Deposit"),BotCommand("filter","⚙️ Filter"),BotCommand("support","🆘 Support"),BotCommand("agent","🤖 Agent Help")]
-    try: await app.bot.set_my_commands(cmds)
-    except: pass
-
-# --- Handlers ---
+# Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid=update.effective_user.id; get_user(uid)
-    if context.args and len(context.args)>0:
-        ref=str(context.args[0]); users=load_file("users.json"); cur=str(uid)
-        if cur in users and users[cur].get('ref_by') is None and ref!=cur and ref in users:
-            users[cur]['ref_by']=ref; save_file("users.json", users)
-    txt=premium("WELCOME")+f"Hello {update.effective_user.first_name}!\n\n💎 50+ Premium Gift Cards\n⚡ Instant Delivery\n🤖 Agent Auto-Update ON\n\n👇 Choose:"
-    await update.message.reply_text(txt, reply_markup=main_kb(uid==ADMIN_ID))
+    uid=update.effective_user.id; users=get_user(uid)
+    if context.args:
+        ref=str(context.args[0]); s=str(uid)
+        all_users=load_file("users.json")
+        if s in all_users and all_users[s].get('ref_by') is None and ref!=s and ref in all_users:
+            all_users[s]['ref_by']=ref; save_file("users.json", all_users)
+    await update.message.reply_text(premium("WELCOME")+f"Hello {update.effective_user.first_name}!\n\n💎 50+ Premium Gift Cards\n⚡ Instant Delivery\n🤖 Agent Auto-Update ON\n\n👇 Choose:", reply_markup=main_kb(uid==ADMIN_ID))
     if uid==ADMIN_ID: await update.message.reply_text(premium("ADMIN PANEL"), reply_markup=admin_kb())
 
 async def profile_h(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid=update.effective_user.id; u=get_user(uid)[str(uid)]
-    await update.message.reply_text(premium("MY PROFILE")+f"👤 {update.effective_user.first_name}\n🆔 {uid}\n💳 ${u.get('balance',0)}\n🛒 {len(u.get('purchases',[]))} buys", reply_markup=main_kb(uid==ADMIN_ID))
+    await update.message.reply_text(premium("MY PROFILE")+f"👤 {update.effective_user.first_name}\n🆔 {uid}\n💳 ${u.get('balance',0)}\n🛒 {len(u.get('purchases',[]))}", reply_markup=main_kb(uid==ADMIN_ID))
 async def balance_h(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid=update.effective_user.id; u=get_user(uid)[str(uid)]
-    await update.message.reply_text(premium("MY BALANCE")+f"💳 ${u.get('balance',0)}\n\n💰 /deposit to add", reply_markup=main_kb(uid==ADMIN_ID))
+    await update.message.reply_text(premium("MY BALANCE")+f"💳 ${u.get('balance',0)}\n\n💰 /deposit", reply_markup=main_kb(uid==ADMIN_ID))
 async def deposit_h(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(premium("DEPOSIT")+f"🪙 LTC: `{LTC_ADDRESS}`\n◎ SOL: `{SOL_ADDRESS}`\n\nMin $5\nSend TXID to @toma for auto credit (Agent will check)", parse_mode='Markdown', reply_markup=main_kb(update.effective_user.id==ADMIN_ID))
+    await update.message.reply_text(premium("DEPOSIT")+f"🪙 LTC: `{LTC_ADDRESS}`\n◎ SOL: `{SOL_ADDRESS}`\n\nMin $5\nAgent auto check korbe!", parse_mode='Markdown', reply_markup=main_kb(update.effective_user.id==ADMIN_ID))
 async def listings_h(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prods=load_file("products.json"); active=[(k,v) for k,v in prods.items() if not v.get('sold')]
-    if not active: await update.message.reply_text(premium("NO STOCK")+"❌ Empty! Agent checking new stock...", reply_markup=main_kb(update.effective_user.id==ADMIN_ID)); return
-    msg=premium(f"BROWSE {len(active)}")+ "\n"; kb=[]
+    if not active: await update.message.reply_text(premium("NO STOCK")+"❌ Empty! Agent checking...", reply_markup=main_kb(update.effective_user.id==ADMIN_ID)); return
+    msg=premium(f"BROWSE {len(active)}")+"\n"; kb=[]
     for pid,p in active[-15:][::-1]:
         f4=p['code'][:4]; avl=p.get('avl_small', p['amount'])
         msg+=f"💎 {f4}... {avl} | ${p['sell_price']} | G {'✅' if p.get('g') else '📴'} P {'✅' if p.get('p') else '📴'} REG {'✅' if p.get('reg') else '❌'}\n"
@@ -118,9 +114,9 @@ async def msg_h(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if "/start" in txt: await start(update, context); return
     if "/profile" in txt or "My Profile" in txt: await profile_h(update, context); return
     if "/balance" in txt or "My Balance" in txt: await balance_h(update, context); return
-    if "/listings" in txt or "Browse Cards" in txt: await listings_h(update, context); return
+    if "/listings" in txt or "Browse" in txt: await listings_h(update, context); return
     if "/deposit" in txt or "Deposit" in txt: await deposit_h(update, context); return
-    if "Agent" in txt: await update.message.reply_text(premium("🤖 AGENT")+ "I am your auto-agent!\n✅ Auto detects USD$ price\n✅ Auto makes avl $ small\n✅ Auto posts to channel\n✅ Auto 39% calc\n✅ Auto update stock\n\nSend stock like: 451R...:xx:USD$3.39 USD", reply_markup=main_kb(uid==ADMIN_ID)); return
+    if "Agent" in txt: await update.message.reply_text(premium("🤖 AGENT")+ "Auto Agent Features:\n✅ USD$3.39 auto detect -> avl $ 3.39\n✅ 39% auto calc\n✅ G/P/REG toggle\n✅ Channel auto post (first 4 digit)\n✅ Auto update stock\n✅ Auto deposit check", reply_markup=main_kb(uid==ADMIN_ID)); return
     if "Support" in txt: await update.message.reply_text(premium("SUPPORT")+"@toma 24/7", reply_markup=main_kb(uid==ADMIN_ID)); return
     if "Refer" in txt: await update.message.reply_text(premium("REFER & EARN")+f"Link: https://t.me/{context.bot.username}?start={uid}\nEarn 5% per deposit! Agent tracks auto.", reply_markup=main_kb(uid==ADMIN_ID)); return
     if "Check Card" in txt: context.user_data['wait']="check"; await update.message.reply_text("🔍 Send full code to check:"); return
@@ -252,28 +248,4 @@ async def cb_h(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if d=="show_filter": CATS=["All","Gift Card Mail"]; kb=[[InlineKeyboardButton(c, callback_data=f"list_{c}")] for c in CATS]; await q.edit_message_text(premium("FILTER"), reply_markup=InlineKeyboardMarkup(kb)); return
     if d=="post_all":
         prods=load_file("products.json"); active=[v for v in prods.values() if not v.get('sold')]
-        await auto_post_channel(context, active[:10]); await q.edit_message_text(f"✅ Posted {len(active[:10])} to channel", reply_markup=admin_kb()); return
-    if d=="settings":
-        c=get_cfg(); await q.edit_message_text(premium("SETTINGS")+f"Perc: {c['perc']}%\nAutoPost: {c.get('auto_post',True)}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"AutoPost {'ON' if c.get('auto_post') else 'OFF'}", callback_data="toggle_autopost")]])); return
-    if d=="toggle_autopost": c=get_cfg(); c['auto_post']=not c.get('auto_post',True); save_file("config.json", c); await q.edit_message_text(premium("SETTINGS")+f"AutoPost: {c['auto_post']}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"AutoPost {'ON' if c['auto_post'] else 'OFF'}", callback_data="toggle_autopost")]])); return
-
-def run_bot():
-    if not BOT_TOKEN: print("No token"); return
-    try:
-        app = Application.builder().token(BOT_TOKEN).post_init(set_cmds).build()
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CommandHandler("profile", profile_h))
-        app.add_handler(CommandHandler("balance", balance_h))
-        app.add_handler(CommandHandler("listings", listings_h))
-        app.add_handler(CallbackQueryHandler(cb_h))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg_h))
-        print("BOT POLLING v22 STARTED - ALL FEATURES")
-        app.run_polling()
-    except Exception as e: print(f"BOT ERROR: {e}")
-
-if __name__ == "__main__":
-    # Flask main, bot daemon -> Render port bug fix
-    threading.Thread(target=run_bot, daemon=True).start()
-    port = int(os.getenv("PORT", 10000))
-    print(f"Flask bind 0.0.0.0:{port}")
-    flask_app.run(host='0.0.0.0', port=port)
+        await auto_post_channel(context, 
