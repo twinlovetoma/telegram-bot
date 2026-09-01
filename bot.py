@@ -1,68 +1,378 @@
-import os, threading, asyncio
+import os, json, uuid, threading, re, asyncio
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7634497248"))
+LTC_ADDRESS = os.getenv("LTC_ADDRESS", "ltc1q...")
+SOL_ADDRESS = os.getenv("SOL_ADDRESS", "So1...")
+STOCK_CHANNEL = os.getenv("STOCK_CHANNEL", "https://t.me/your_stock_channel")
+STOCK_CHANNEL_ID = os.getenv("STOCK_CHANNEL_ID", "@your_stock_channel")
+SUPPORT_USER = os.getenv("SUPPORT_USER", "@your_support")
+CHECKER_BOT = "@XprepaidCheckerBot"
+VENDOR_PRICE = 15
+
 flask_app = Flask(__name__)
 @flask_app.route('/')
-def home(): return "TEST LIVE OK"
+def home(): return "v66 FINAL LIVE"
 @flask_app.route('/health')
 def health(): return "OK"
 
-def top_menu(admin=False):
-    kb = [
-        [InlineKeyboardButton("📋 Listings", callback_data="list"), InlineKeyboardButton("👤 Profile", callback_data="profile")],
-        [InlineKeyboardButton("💰 Deposit", callback_data="deposit"), InlineKeyboardButton("⚙️ Filter", callback_data="filter")],
-    ]
-    if admin:
-        kb.append([InlineKeyboardButton("👑 Admin Panel", callback_data="admin")])
-    return InlineKeyboardMarkup(kb)
+def load_file(f, d=None):
+    try:
+        if os.path.exists(f):
+            with open(f, "r") as x: return json.load(x)
+    except: pass
+    return d if d is not None else {}
+def save_file(f,d):
+    with open(f, "w") as x: json.dump(d, x, indent=2)
+def get_user(uid):
+    users = load_file("users.json")
+    s = str(uid)
+    if s not in users:
+        users[s] = {"balance": 0, "purchases": [], "is_vendor": False, "sales": 0, "earn": 0}
+        save_file("users.json", users)
+    return users
+def get_cfg(): return load_file("config.json") or {"perc": 39, "comm": 5}
 
+def top_menu(admin=False):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⚜️ Seller's Dashboard 🪝", callback_data="vendor_panel")],
+        [InlineKeyboardButton("🔰 Listings", callback_data="list"), InlineKeyboardButton("🪪 Profile", callback_data="profile")],
+    ])
+def profile_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏛️ Deposit Funds", callback_data="dep_funds"), InlineKeyboardButton("❄️ Balance Checker", callback_data="bal_check")],
+        [InlineKeyboardButton("🛒 Order History", callback_data="order_hist"), InlineKeyboardButton("🔄 Refresh", callback_data="profile")],
+        [InlineKeyboardButton("🔙 Back", callback_data="main")]
+    ])
+def deposit_choice_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💎 LTC", callback_data="dep_ltc"), InlineKeyboardButton("💜 SOL", callback_data="dep_sol")],
+        [InlineKeyboardButton("🔙 Back", callback_data="profile")]
+    ])
+def admin_kb():
+    cfg = get_cfg()
+    prods = load_file("products.json")
+    stock = len([x for x in prods.values() if not x.get("sold")])
+    sold = len([x for x in prods.values() if x.get("sold")])
+    dep_pending = len([x for x in load_file("deposits.json").values() if x.get("status")=="pending"])
+    order_pending = len([x for x in load_file("orders.json").values() if "pending" in x.get("status","")])
+    perc = cfg.get('perc', 39)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"📦 Stock:{stock}", callback_data="noop"), InlineKeyboardButton(f"✅ Sold:{sold}", callback_data="noop")],
+        [InlineKeyboardButton("📉 -5%", callback_data="perc_minus"), InlineKeyboardButton(f"📈 {perc}%", callback_data="set_perc"), InlineKeyboardButton("📈 +5%", callback_data="perc_plus")],
+        [InlineKeyboardButton("➕ Add Stock", callback_data="add_gift"), InlineKeyboardButton("💵 Add Balance", callback_data="add_bal")],
+        [InlineKeyboardButton(f"💳 Dep:{dep_pending}", callback_data="pending_dep"), InlineKeyboardButton(f"🛒 Orders:{order_pending}", callback_data="pending_orders")],
+        [InlineKeyboardButton("👥 Users", callback_data="users_list"), InlineKeyboardButton("📋 Listings", callback_data="list")],
+        [InlineKeyboardButton("🔙 Back", callback_data="main")]
+    ])
+def vendor_dash_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➕ Add Giftcard", callback_data="add_gift")],
+        [InlineKeyboardButton("📦 My Stock", callback_data="my_stock"), InlineKeyboardButton("📈 My Sales", callback_data="my_sales")],
+        [InlineKeyboardButton("💰 Earnings", callback_data="my_earn"), InlineKeyboardButton("🔙 Back", callback_data="main")]
+    ])
+def vendor_buy_kb(bal):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"👑 Buy Vendor {VENDOR_PRICE}$", callback_data="buy_vendor")],
+        [InlineKeyboardButton("🏛️ Deposit Funds", callback_data="dep_funds")],
+        [InlineKeyboardButton("🔙 Back", callback_data="main")]
+    ])
+def mark_kb(g,p,reg,price,orig):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"🅶 {'✅ ON' if g else '❌ OFF'}", callback_data="mark_g"), InlineKeyboardButton(f"🅿️ {'✅ ON' if p else '❌ OFF'}", callback_data="mark_p"), InlineKeyboardButton(f"{'®️ REG' if reg else '🌐 UNREG'}", callback_data="mark_reg")],
+        [InlineKeyboardButton("➖", callback_data="price_minus"), InlineKeyboardButton(f"💲 ${price} | Orig ${orig}", callback_data="price_custom"), InlineKeyboardButton("➕", callback_data="price_plus")],
+        [InlineKeyboardButton(f"💾 SAVE ${price}", callback_data="mark_save")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="main")]
+    ])
+def get_amount(text):
+    m = re.search(r"USD\$\s*([0-9]+)", text, re.I)
+    if m: return float(m.group(1))
+    m = re.search(r"\$\s*([0-9]+)", text)
+    if m: return float(m.group(1))
+    nums = re.findall(r"[0-9]+", text)
+    if nums: return float(nums[-1])
+    return 25.0
+async def post_to_stock_channel(context, product, pid):
+    try:
+        txt = f"🔥 NEW STOCK 🔥\n🎁 {product['code'][:20]}\n💵 Orig: ${product.get('orig')} Sell: ${product['price']}"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛒 Buy Now", url=f"https://t.me/{context.bot.username}?start=buy_{pid}")]])
+        await context.bot.send_message(chat_id=STOCK_CHANNEL_ID, text=txt, reply_markup=kb)
+    except: pass
 async def set_cmds(app):
     await app.bot.set_my_commands([
-        BotCommand("start", "Launch bot"),
-        BotCommand("listings", "Browse"),
-        BotCommand("filter", "Filter"),
-        BotCommand("profile", "Profile"),
-        BotCommand("balance", "Balance"),
-        BotCommand("deposit", "Deposit"),
-        BotCommand("vendor", "Vendor"),
-        BotCommand("admin", "Admin"),
+        BotCommand("start", "🚀 Launch"), BotCommand("latest", "📋 Latest"), BotCommand("stock", "📦 Stock"),
+        BotCommand("deposit", "💰 Deposit"), BotCommand("support", "💬 Support"), BotCommand("profile", "👤 Profile"),
+        BotCommand("admin", "👑 Admin"), BotCommand("vendor", "👑 Vendor"),
     ])
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    txt = "🎁 WELCOME TO PREPAIDS GIFT'S 🎁\n\nBalance: $0\nStock: 142\nRefer: 10%\n\nYour premium gift card destination."
-    await update.message.reply_text(txt, reply_markup=top_menu(update.effective_user.id==ADMIN_ID))
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id; get_user(uid)
+    cfg = get_cfg(); bal = load_file("users.json").get(str(uid), {}).get("balance", 0)
+    stock = len([x for x in load_file("products.json").values() if not x.get("sold")])
+    await update.message.reply_text(f"🎁 PREPAIDS GIFT'S\n\n💰 Balance: ${bal}\n📦 Stock: {stock}\n📈 Rate: {cfg['perc']}%", reply_markup=top_menu(uid==ADMIN_ID))
 
-async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    d = q.data
+async def latest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prods = load_file("products.json"); active = [(k,v) for k,v in prods.items() if not v.get("sold")]
+    if not active: await update.message.reply_text("📋 No listings", reply_markup=top_menu(update.effective_user.id==ADMIN_ID)); return
+    kb = [[InlineKeyboardButton(f"{p['code'][:8]} ${p['price']}", callback_data=f"view_{pid}")] for pid,p in active[-10:][::-1]]
+    kb.append([InlineKeyboardButton("🔙 Back", callback_data="main")])
+    await update.message.reply_text(f"📋 Latest {len(active)}", reply_markup=InlineKeyboardMarkup(kb))
+
+async def stock_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text(f"📦 STOCK\n{STOCK_CHANNEL}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 Join", url=STOCK_CHANNEL)]]))
+async def deposit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text("🏛️ Deposit Funds:", reply_markup=deposit_choice_kb())
+async def support_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE): await update.message.reply_text(f"💬 Support {SUPPORT_USER}")
+async def profile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id; u = get_user(uid).get(str(uid), {})
+    await update.message.reply_text(f"🪪 PROFILE\nID: {uid}\n💰 Balance: ${u.get('balance',0)}\n👑 Vendor: {'✅' if u.get('is_vendor') else '❌'}", reply_markup=profile_menu())
+async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id!= ADMIN_ID: await update.message.reply_text("❌ Admin only"); return
+    cfg = get_cfg(); await update.message.reply_text(f"👑 ADMIN {cfg['perc']}%", reply_markup=admin_kb())
+async def vendor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id; u = get_user(uid).get(str(uid), {})
+    if u.get("is_vendor"): await update.message.reply_text("⚜️ SELLER'S DASHBOARD", reply_markup=vendor_dash_kb())
+    else: await update.message.reply_text(f"Buy Vendor ${VENDOR_PRICE}", reply_markup=vendor_buy_kb(u.get('balance',0)))
+
+async def msg_h(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = update.message.text or ""; uid = update.effective_user.id
+    if txt.startswith("/"): return
+    wait = context.user_data.get("wait")
+    if wait and wait.startswith("deposit_txid_"):
+        coin = wait.replace("deposit_txid_", ""); did = str(uuid.uuid4())[:6]
+        deposits = load_file("deposits.json"); deposits[did] = {"user_id": uid, "coin": coin, "txid": txt, "status": "pending"}; save_file("deposits.json", deposits)
+        await update.message.reply_text(f"✅ Submitted {coin} {did}", reply_markup=profile_menu())
+        try:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ {did}", callback_data=f"dep_approve_{did}"), InlineKeyboardButton(f"❌ {did}", callback_data=f"dep_reject_{did}")]])
+            await context.bot.send_message(chat_id=ADMIN_ID, text=f"💳 DEPOSIT {did} User:{uid} {coin} {txt}", reply_markup=kb)
+        except: pass
+        context.user_data["wait"] = None; return
+    if wait == "add_stock":
+        amt = get_amount(txt); perc = get_cfg().get('perc', 39); calc = round(amt * perc / 100, 2)
+        context.user_data.update({"pending_code": txt, "pending_amt": amt, "pending_price": calc, "mark_g": False, "mark_p": False, "mark_reg": False, "wait": "marking"})
+        await update.message.reply_text(f"✅ Orig: ${amt} -> Sell: ${calc}", reply_markup=mark_kb(False,False,False,calc,amt)); return
+    if wait == "set_price":
+        try: price = float(txt.replace("$",""))
+        except: await update.message.reply_text("Send price e.g. 8.5"); return
+        context.user_data["pending_price"] = price; context.user_data["wait"] = "marking"
+        g,p,reg = context.user_data.get("mark_g"), context.user_data.get("mark_p"), context.user_data.get("mark_reg")
+        await update.message.reply_text(f"Custom ${price}", reply_markup=mark_kb(g,p,reg,price,context.user_data.get("pending_amt",25))); return
+    if wait == "add_bal":
+        try:
+            parts = txt.split(); uid_t = parts[0]; amt = float(parts[1])
+            users = load_file("users.json")
+            if uid_t not in users: users[uid_t] = {"balance": 0, "purchases": [], "is_vendor": False, "sales": 0, "earn": 0}
+            users[uid_t]["balance"] = users[uid_t].get("balance",0)+amt; save_file("users.json", users)
+            await update.message.reply_text(f"✅ Added ${amt} to {uid_t}", reply_markup=admin_kb())
+            try: await context.bot.send_message(chat_id=int(uid_t), text=f"💰 Added ${amt}!")
+            except: pass
+        except: await update.message.reply_text("Format: USERID AMOUNT", reply_markup=admin_kb())
+        context.user_data["wait"] = None; return
+    if wait == "set_perc":
+        try: perc = float(txt.replace("%","")); cfg = get_cfg(); cfg["perc"] = perc; save_file("config.json", cfg); await update.message.reply_text(f"✅ Perc {perc}%", reply_markup=admin_kb())
+        except: pass
+        context.user_data["wait"] = None; return
+
+async def cb_h(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer(); d = q.data; uid = q.from_user.id
+    users = get_user(uid); u = users.get(str(uid), {}); bal = u.get("balance", 0); cfg = get_cfg()
+
+    if d == "main":
+        stock = len([x for x in load_file("products.json").values() if not x.get("sold")])
+        await q.edit_message_text(f"🎁 PREPAIDS GIFT'S\n💰 Bal: ${bal}\n📦 Stock: {stock}\n📈 {cfg['perc']}%", reply_markup=top_menu(uid==ADMIN_ID)); return
+    if d == "profile": await q.edit_message_text(f"🪪 PROFILE\nID: {uid}\n💰 Balance: ${bal}\n👑 Vendor: {'✅' if u.get('is_vendor') else '❌'}", reply_markup=profile_menu()); return
+    if d == "dep_funds": await q.edit_message_text("🏛️ Deposit Funds", reply_markup=deposit_choice_kb()); return
+    if d == "bal_check":
+        checker = CHECKER_BOT.replace('@',''); deep_link = f"https://t.me/{checker}?start=check_{uid}_{bal}"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("❄️ Redirecting to @XprepaidCheckerBot ↗️", url=deep_link)]])
+        await q.edit_message_text(f"❄️ Balance Checker\n💰 Balance: ${bal}\nID: {uid}\n\nTap below — auto redirect to @XprepaidCheckerBot!", reply_markup=kb); return
+    if d == "order_hist":
+        pur = u.get("purchases", [])[-10:]; msg = f"🛒 Order History {len(pur)}\n"
+        for p in pur[::-1]: msg += f"• {p.get('code','')[:15]} ${p.get('price')}\n"
+        if not pur: msg = "No orders"
+        await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="profile")]])); return
+    if d == "dep_ltc":
+        qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={LTC_ADDRESS}"
+        txt = f"💎 LTC Deposit\nAddress:\n`{LTC_ADDRESS}`\nMin $5\nSend then Submit TXID"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📤 Submit TXID", callback_data="submit_ltc")],[InlineKeyboardButton("🔙 Back", callback_data="dep_funds")]])
+        try: await q.edit_message_text(txt, reply_markup=kb, parse_mode="Markdown"); await context.bot.send_photo(chat_id=uid, photo=qr)
+        except: await q.edit_message_text(txt, reply_markup=kb, parse_mode="Markdown")
+        return
+    if d == "dep_sol":
+        qr = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={SOL_ADDRESS}"
+        txt = f"💜 SOL Deposit\nAddress:\n`{SOL_ADDRESS}`\nMin $5"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("📤 Submit TXID", callback_data="submit_sol")],[InlineKeyboardButton("🔙 Back", callback_data="dep_funds")]])
+        try: await q.edit_message_text(txt, reply_markup=kb, parse_mode="Markdown"); await context.bot.send_photo(chat_id=uid, photo=qr)
+        except: await q.edit_message_text(txt, reply_markup=kb, parse_mode="Markdown")
+        return
+    if d == "submit_ltc": context.user_data["wait"] = "deposit_txid_LTC"; await q.edit_message_text("Paste LTC TXID:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="dep_funds")]])); return
+    if d == "submit_sol": context.user_data["wait"] = "deposit_txid_SOL"; await q.edit_message_text("Paste SOL TXID:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="dep_funds")]])); return
     if d == "list":
-        await q.edit_message_text("📋 LISTINGS - 0 Stock\nAdd stock from Admin/Vendor", reply_markup=top_menu(q.from_user.id==ADMIN_ID))
-    elif d == "profile":
-        await q.edit_message_text(f"👤 PROFILE\nID: {q.from_user.id}\nBalance: $0\nVendor: Not Active", reply_markup=top_menu(q.from_user.id==ADMIN_ID))
-    elif d == "deposit":
-        await q.edit_message_text("💰 DEPOSIT\nLTC: ltc1q...\nSOL: So1...", reply_markup=top_menu(q.from_user.id==ADMIN_ID))
-    elif d == "filter":
-        await q.edit_message_text("⚙️ FILTER\nAll | Giftcard | COD 880 CP", reply_markup=top_menu(q.from_user.id==ADMIN_ID))
-    elif d == "admin":
-        await q.edit_message_text("👑 ADMIN PANEL\nStock:0\nAdd Stock | Add Balance | Pending COD", reply_markup=top_menu(True))
-    elif d == "main":
-        await q.edit_message_text("🎁 WELCOME TO PREPAIDS GIFT'S 🎁", reply_markup=top_menu(q.from_user.id==ADMIN_ID))
+        prods = load_file("products.json"); active = [(k,v) for k,v in prods.items() if not v.get("sold")]
+        if not active: await q.edit_message_text("📋 No listings", reply_markup=top_menu(uid==ADMIN_ID)); return
+        kb = [[InlineKeyboardButton(f"{p['code'][:12]} ${p['price']}", callback_data=f"view_{pid}")] for pid,p in active[-15:][::-1]]
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data="main")])
+        await q.edit_message_text(f"🔰 Listings {len(active)}", reply_markup=InlineKeyboardMarkup(kb)); return
+    if d == "admin":
+        if uid!= ADMIN_ID: return
+        await q.edit_message_text(f"👑 ADMIN {cfg['perc']}%", reply_markup=admin_kb()); return
+    if d == "perc_plus":
+        if uid!= ADMIN_ID: return
+        cfg["perc"] = min(100, cfg.get('perc',39)+5); save_file("config.json", cfg); await q.edit_message_text(f"👑 ADMIN {cfg['perc']}%", reply_markup=admin_kb()); return
+    if d == "perc_minus":
+        if uid!= ADMIN_ID: return
+        cfg["perc"] = max(5, cfg.get('perc',39)-5); save_file("config.json", cfg); await q.edit_message_text(f"👑 ADMIN {cfg['perc']}%", reply_markup=admin_kb()); return
+    if d == "vendor_panel":
+        if u.get("is_vendor"):
+            prods = load_file("products.json"); my_stock = len([p for p in prods.values() if p.get("owner")==uid and not p.get("sold")])
+            my_sold = len([p for p in prods.values() if p.get("owner")==uid and p.get("sold")])
+            await q.edit_message_text(f"⚜️ SELLER'S DASHBOARD 🪝\n📦 Stock: {my_stock}\n✅ Sold: {my_sold}\n💰 Earn: ${u.get('earn',0)}\n💳 Bal: ${bal}", reply_markup=vendor_dash_kb())
+        else: await q.edit_message_text(f"⚜️ SELLER'S DASHBOARD\nBuy Vendor ${VENDOR_PRICE} Bal ${bal}", reply_markup=vendor_buy_kb(bal))
+        return
+    if d == "buy_vendor":
+        if u.get("is_vendor"): await q.edit_message_text("Already vendor!", reply_markup=vendor_dash_kb()); return
+        if bal < VENDOR_PRICE: await q.edit_message_text(f"❌ Need ${VENDOR_PRICE} Bal ${bal}", reply_markup=vendor_buy_kb(bal)); return
+        users[str(uid)]["balance"] = bal - VENDOR_PRICE; users[str(uid)]["is_vendor"] = True; save_file("users.json", users)
+        await q.edit_message_text("✅ BOUGHT!", reply_markup=vendor_dash_kb()); return
+    if d == "my_stock":
+        prods = load_file("products.json"); my = [(k,v) for k,v in prods.items() if v.get("owner")==uid and not v.get("sold")]
+        msg = f"📦 My Stock {len(my)}\n"; kb = []
+        for pid,p in my[-10:]: msg += f"{p['code'][:12]} ${p['price']}\n"; kb.append([InlineKeyboardButton(f"🗑️ {p['code'][:6]}", callback_data=f"del_{pid}")])
+        if not my: msg = "No stock"
+        kb.append([InlineKeyboardButton("➕ Add", callback_data="add_gift"), InlineKeyboardButton("🔙 Back", callback_data="vendor_panel")])
+        await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb)); return
+    if d.startswith("del_"):
+        pid = d.replace("del_",""); prods = load_file("products.json")
+        if pid in prods and prods[pid].get("owner")==uid: del prods[pid]; save_file("products.json", prods); await q.edit_message_text(f"Deleted {pid}", reply_markup=vendor_dash_kb())
+        return
+    if d == "my_sales":
+        prods = load_file("products.json"); sold = [(k,v) for k,v in prods.items() if v.get("owner")==uid and v.get("sold")]
+        msg = f"📈 Sales {len(sold)}\n"
+        for pid,p in sold[-10:]: msg += f"{p['code'][:10]} ${p['price']}\n"
+        if not sold: msg = "No sales"
+        await q.edit_message_text(msg, reply_markup=vendor_dash_kb()); return
+    if d == "my_earn": await q.edit_message_text(f"💰 Earn ${u.get('earn',0)}", reply_markup=vendor_dash_kb()); return
+    if d == "add_gift": context.user_data["wait"] = "add_stock"; await q.edit_message_text("📝 SEND: `4511... (USD$25)`", parse_mode="Markdown", reply_markup=vendor_dash_kb() if u.get("is_vendor") else admin_kb()); return
+    if d == "set_perc": context.user_data["wait"] = "set_perc"; await q.edit_message_text(f"Current {cfg['perc']}%", reply_markup=admin_kb()); return
+    if d == "add_bal": context.user_data["wait"] = "add_bal"; await q.edit_message_text("Format: USERID AMOUNT", reply_markup=admin_kb()); return
+    if d == "users_list":
+        users = load_file("users.json"); msg = f"👥 Users {len(users)}\n"
+        for uid_k, udata in list(users.items())[-10:]: msg += f"{uid_k} Bal:{udata.get('balance',0)}\n"
+        await q.edit_message_text(msg, reply_markup=admin_kb()); return
+    if d == "pending_dep":
+        deposits = load_file("deposits.json"); msg = "💳 PENDING DEP\n"; kb = []
+        for did, dep in list(deposits.items())[-10:][::-1]:
+            if dep.get("status")=="pending": msg += f"{did} User:{dep['user_id']} {dep['coin']}\n"; kb.append([InlineKeyboardButton(f"✅ {did}", callback_data=f"dep_approve_{did}"), InlineKeyboardButton(f"❌ {did}", callback_data=f"dep_reject_{did}")])
+        if not kb: msg = "No pending"
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin")])
+        await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb)); return
+    if d == "pending_orders":
+        orders = load_file("orders.json"); msg = f"🛒 PENDING ORDERS {len([o for o in orders.values() if 'pending' in o['status']])}\n"; kb = []
+        for oid,o in list(orders.items())[-15:][::-1]:
+            if "pending" in o.get("status",""): msg += f"{oid} Buyer:{o['buyer_id']} ${o['price']} {o['code'][:10]}\n"; kb.append([InlineKeyboardButton(f"✅ {oid}", callback_data=f"approve_{oid}"), InlineKeyboardButton(f"❌ {oid}", callback_data=f"reject_{oid}")])
+        if not kb: msg = "No pending orders"
+        kb.append([InlineKeyboardButton("🔙 Back", callback_data="admin")])
+        await q.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(kb)); return
+    if d.startswith("dep_approve_"):
+        did = d.replace("dep_approve_",""); deposits = load_file("deposits.json")
+        if did in deposits: deposits[did]["status"] = "approved"; save_file("deposits.json", deposits); await q.edit_message_text(f"✅ {did} Approved!", reply_markup=admin_kb())
+        return
+    if d.startswith("dep_reject_"):
+        did = d.replace("dep_reject_",""); deposits = load_file("deposits.json")
+        if did in deposits: deposits[did]["status"] = "rejected"; save_file("deposits.json", deposits); await q.edit_message_text(f"❌ {did} Rejected", reply_markup=admin_kb())
+        return
+    if d == "noop": return
+    if d in ["mark_g","mark_p","mark_reg","price_minus","price_plus"]:
+        if d == "mark_g": context.user_data["mark_g"] = not context.user_data.get("mark_g", False)
+        elif d == "mark_p": context.user_data["mark_p"] = not context.user_data.get("mark_p", False)
+        elif d == "mark_reg": context.user_data["mark_reg"] = not context.user_data.get("mark_reg", False)
+        elif d == "price_minus": context.user_data["pending_price"] = max(0.5, round(context.user_data.get("pending_price",9)-1,2))
+        elif d == "price_plus": context.user_data["pending_price"] = round(context.user_data.get("pending_price",9)+1,2)
+        g,p,reg = context.user_data.get("mark_g"), context.user_data.get("mark_p"), context.user_data.get("mark_reg")
+        price, orig = context.user_data["pending_price"], context.user_data.get("pending_amt",25)
+        await q.edit_message_text(f"Card: {context.user_data['pending_code'][:25]}\nOrig ${orig} Sell ${price}", reply_markup=mark_kb(g,p,reg,price,orig)); return
+    if d == "price_custom": context.user_data["wait"] = "set_price"; await q.edit_message_text("Send price e.g. 8.5"); return
+    if d == "mark_save":
+        price = context.user_data["pending_price"]; code = context.user_data["pending_code"]; orig = context.user_data.get("pending_amt",25)
+        prods = load_file("products.json"); pid = str(uuid.uuid4())[:6]
+        prods[pid] = {"code": code, "orig": orig, "price": price, "sold": False, "owner": uid, "g": context.user_data.get("mark_g"), "p": context.user_data.get("mark_p"), "reg": context.user_data.get("mark_reg")}
+        save_file("products.json", prods); context.user_data["wait"] = None; await post_to_stock_channel(context, prods[pid], pid)
+        await q.edit_message_text(f"✅ Saved ${price} + Posted!", reply_markup=vendor_dash_kb() if u.get("is_vendor") else admin_kb()); return
+    if d.startswith("view_"):
+        pid = d.replace("view_",""); p = load_file("products.json").get(pid)
+        if not p or p.get("sold"): await q.edit_message_text("❌ Sold out", reply_markup=top_menu(uid==ADMIN_ID)); return
+        await q.edit_message_text(f"🎁 {p['code'][:30]}\nOrig ${p.get('orig','')} Sell ${p['price']}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(f"🛒 Buy ${p['price']}", callback_data=f"buy_{pid}")],[InlineKeyboardButton("🔙 Back", callback_data="list")]])); return
+    if d.startswith("buy_"):
+        pid = d.replace("buy_",""); p = load_file("products.json").get(pid)
+        if not p or p.get("sold"): await q.edit_message_text("❌ Sold out", reply_markup=top_menu(uid==ADMIN_ID)); return
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm Purchase", callback_data=f"confirm_buy_{pid}")],[InlineKeyboardButton("❌ Cancel", callback_data="list")]])
+        await q.edit_message_text(f"🛒 Confirm?\n\n🎁 {p['code'][:20]}\n💵 Price: ${p['price']} (Orig ${p.get('orig')})\n💰 Bal: ${bal}\n\nConfirm korle admin er kache jabe!", reply_markup=kb); return
+    if d.startswith("confirm_buy_"):
+        pid = d.replace("confirm_buy_",""); prods = load_file("products.json"); p = prods.get(pid)
+        if not p or p.get("sold"): await q.edit_message_text("❌ Sold out", reply_markup=top_menu(uid==ADMIN_ID)); return
+        users = load_file("users.json"); s = str(uid); bal_now = users[s].get("balance",0)
+        if bal_now < p["price"]: await q.edit_message_text(f"❌ Need ${p['price']} Bal ${bal_now}", reply_markup=top_menu(uid==ADMIN_ID)); return
+        users[s]["balance"] = bal_now - p["price"]; save_file("users.json", users)
+        orders = load_file("orders.json"); oid = str(uuid.uuid4())[:6]
+        orders[oid] = {"buyer_id": uid, "product_id": pid, "code": p["code"], "price": p["price"], "orig": p.get("orig"), "status": "pending_approval", "owner": p.get("owner")}
+        save_file("orders.json", orders)
+        await q.edit_message_text(f"⏳ Order {oid} Submitted!\nAdmin approval er jonno wait koro...", reply_markup=top_menu(uid==ADMIN_ID))
+        try:
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"✅ Approve {oid}", callback_data=f"approve_{oid}"), InlineKeyboardButton(f"❌ Reject {oid}", callback_data=f"reject_{oid}")]])
+            await context.bot.send_message(chat_id=ADMIN_ID, text=f"🛒 NEW ORDER {oid}\nBuyer: {uid}\nItem: {p['code'][:30]}\nPrice: ${p['price']} Orig: ${p.get('orig')}\nPID: {pid}", reply_markup=kb)
+        except: pass
+        return
+    if d.startswith("approve_"):
+        if uid!= ADMIN_ID: return
+        oid = d.replace("approve_",""); orders = load_file("orders.json"); o = orders.get(oid)
+        if not o: await q.edit_message_text("❌ Not found", reply_markup=admin_kb()); return
+        pid = o["product_id"]; prods = load_file("products.json"); users = load_file("users.json"); buyer_id = o["buyer_id"]
+        if pid in prods: prods[pid]["sold"] = True
+        orders[oid]["status"] = "approved"
+        if str(buyer_id) in users: users[str(buyer_id)]["purchases"].append({"code": o["code"], "price": o["price"], "orig": o.get("orig"), "pid": pid})
+        owner = o.get("owner")
+        if owner and str(owner)!= str(buyer_id) and str(owner) in users:
+            comm = get_cfg().get("comm",5); earn = round(o["price"]*comm/100,2)
+            users[str(owner)]["earn"] = users[str(owner)].get("earn",0)+earn; users[str(owner)]["sales"] = users[str(owner)].get("sales",0)+1
+        save_file("users.json", users); save_file("products.json", prods); save_file("orders.json", orders)
+        await q.edit_message_text(f"✅ Approved {oid} - Delivered!", reply_markup=admin_kb())
+        checker = CHECKER_BOT.replace('@',''); deep_link = f"https://t.me/{checker}?start=item_{pid}_{buyer_id}_{oid}"
+        try:
+            txt = f"✅ Order {oid} Approved!\n\n🎁 Code: `{o['code']}`\n💵 Paid: ${o['price']} | Orig: ${o.get('orig','')}\n\n📦 Details sent to @XprepaidCheckerBot — Tap below:"
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("❄️ Go to @XprepaidCheckerBot ↗️", url=deep_link)],[InlineKeyboardButton("🏠 Home", callback_data="main")]])
+            await context.bot.send_message(chat_id=buyer_id, text=txt, reply_markup=kb, parse_mode="Markdown")
+        except: pass
+        return
+    if d.startswith("reject_"):
+        if uid!= ADMIN_ID: return
+        oid = d.replace("reject_",""); orders = load_file("orders.json"); o = orders.get(oid)
+        if not o: return
+        users = load_file("users.json"); buyer_id = o["buyer_id"]
+        if str(buyer_id) in users: users[str(buyer_id)]["balance"] = users[str(buyer_id)].get("balance",0) + o["price"]; save_file("users.json", users)
+        orders[oid]["status"] = "rejected"; save_file("orders.json", orders)
+        await q.edit_message_text(f"❌ Rejected {oid} - Refunded ${o['price']}", reply_markup=admin_kb())
+        try: await context.bot.send_message(chat_id=buyer_id, text=f"❌ Order {oid} Rejected! ${o['price']} refunded.")
+        except: pass
+        return
 
 async def run_bot():
     app = Application.builder().token(BOT_TOKEN).post_init(set_cmds).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(cb))
-    await app.initialize()
-    await app.start()
+    app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("latest", latest_cmd))
+    app.add_handler(CommandHandler("stock", stock_cmd))
+    app.add_handler(CommandHandler("deposit", deposit_cmd))
+    app.add_handler(CommandHandler("support", support_cmd))
+    app.add_handler(CommandHandler("profile", profile_cmd))
+    app.add_handler(CommandHandler("admin", admin_cmd))
+    app.add_handler(CommandHandler("vendor", vendor_cmd))
+    app.add_handler(CallbackQueryHandler(cb_h))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg_h))
+    await app.initialize(); await app.start()
     try: await app.bot.delete_webhook(drop_pending_updates=True)
     except: pass
     await app.updater.start_polling(drop_pending_updates=True)
-    print("TEST LIVE")
+    print("v66 FINAL LIVE")
     while True: await asyncio.sleep(3600)
 
 def run_thread(): asyncio.run(run_bot())
